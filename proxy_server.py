@@ -72,16 +72,19 @@ def is_uid_activated(uid: str) -> bool:
         return False
 
 
-def get_uid_expiry(uid: str) -> str:
-    """Lấy ngày hết hạn Gold từ DB. Nếu không có -> dùng FAKE_EXPIRES_DATE."""
+def get_uid_dates(uid: str) -> tuple[str, str]:
+    """Lấy ngày kích hoạt (purchase_date) và ngày hết hạn (expires_at) từ DB."""
+    pur_date = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    exp_date = FAKE_EXPIRES_DATE
+
     if not os.path.exists(MAIN_DB_PATH):
-        return FAKE_EXPIRES_DATE
+        return pur_date, exp_date
     try:
         conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT expires_at FROM upgrades
+            SELECT created_at, expires_at FROM upgrades
             WHERE locket_uid = ? AND status = 'success'
             ORDER BY created_at DESC LIMIT 1
             """,
@@ -89,24 +92,21 @@ def get_uid_expiry(uid: str) -> str:
         )
         row = cur.fetchone()
         conn.close()
-        if row and row[0]:
-            # expires_at có thể là timestamp hoặc ISO string
-            expires = row[0]
-            # Nếu là int timestamp
-            if isinstance(expires, (int, float)):
-                dt = datetime.datetime.utcfromtimestamp(expires)
-                return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            return str(expires)
+        if row:
+            if row[0]:
+                pur_date = str(row[0])
+            if row[1]:
+                exp_date = str(row[1])
     except Exception as e:
-        log.warning(f"DB expiry error for {uid}: {e}")
-    return FAKE_EXPIRES_DATE
+        log.warning(f"DB date error for {uid}: {e}")
+    return pur_date, exp_date
 
 
 # --------------- Gold Injection ---------------
 FAKE_ENTITLEMENT = {
     "expires_date": FAKE_EXPIRES_DATE,
     "grace_period_expires_date": None,
-    "product_identifier": "com.locket.Locket.gold.annual",
+    "product_identifier": "com.locket02.premium.yearly",
     "product_plan_identifier": None,
     "purchase_date": FAKE_PURCHASE_DATE,
     "store": "app_store",
@@ -135,17 +135,21 @@ FAKE_SUBSCRIPTION = {
 }
 
 def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
-    """Sửa response subscriber để inject Gold entitlement."""
-    expires = get_uid_expiry(uid)
+    """Sửa response subscriber để inject Gold entitlement với ngày nâng thật."""
+    pur_date, exp_date = get_uid_dates(uid)
 
     data["Attention"] = "Locket Gold By DungNguyen05"
 
     ent = FAKE_ENTITLEMENT.copy()
-    ent["expires_date"] = expires
+    ent["purchase_date"] = pur_date
+    ent["original_purchase_date"] = pur_date
+    ent["expires_date"] = exp_date
     ent["product_identifier"] = "com.locket02.premium.yearly"
 
     sub_entry = FAKE_SUBSCRIPTION.copy()
-    sub_entry["expires_date"] = expires
+    sub_entry["purchase_date"] = pur_date
+    sub_entry["original_purchase_date"] = pur_date
+    sub_entry["expires_date"] = exp_date
 
     subscriber = data.setdefault("subscriber", {})
 
@@ -154,13 +158,13 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     entitlements["Gold"] = ent
     entitlements["gold"] = ent
 
-    # Inject subscription products (match both LocketGold.js and official Locket products)
+    # Inject subscription products
     subscriptions = subscriber.setdefault("subscriptions", {})
     subscriptions["com.locket02.premium.yearly"] = sub_entry
     subscriptions["com.locket.Locket.gold.annual"] = sub_entry
     subscriptions["com.locket.Locket.gold.annual:com.locket.Locket.gold.annual.base"] = sub_entry
 
-    log.info(f"[INJECT] Gold injected for uid={uid}, expires={expires}")
+    log.info(f"[INJECT] Gold injected for uid={uid}, purchase={pur_date}, expires={exp_date}")
     return data
 
 
