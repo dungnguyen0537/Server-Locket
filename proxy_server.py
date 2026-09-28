@@ -138,23 +138,27 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     """Sửa response subscriber để inject Gold entitlement."""
     expires = get_uid_expiry(uid)
 
+    data["Attention"] = "Locket Gold By DungNguyen05"
+
     ent = FAKE_ENTITLEMENT.copy()
     ent["expires_date"] = expires
+    ent["product_identifier"] = "com.locket02.premium.yearly"
 
     sub_entry = FAKE_SUBSCRIPTION.copy()
     sub_entry["expires_date"] = expires
 
     subscriber = data.setdefault("subscriber", {})
-    # Inject entitlement
+
+    # Inject entitlements
     entitlements = subscriber.setdefault("entitlements", {})
     entitlements["Gold"] = ent
+    entitlements["gold"] = ent
 
-    # Inject subscription product
+    # Inject subscription products (match both LocketGold.js and official Locket products)
     subscriptions = subscriber.setdefault("subscriptions", {})
+    subscriptions["com.locket02.premium.yearly"] = sub_entry
+    subscriptions["com.locket.Locket.gold.annual"] = sub_entry
     subscriptions["com.locket.Locket.gold.annual:com.locket.Locket.gold.annual.base"] = sub_entry
-
-    # Inject non_subscriptions nếu cần
-    non_subs = subscriber.setdefault("non_subscriptions", {})
 
     log.info(f"[INJECT] Gold injected for uid={uid}, expires={expires}")
     return data
@@ -186,12 +190,15 @@ async def forward_to_revenuecat(method: str, path: str, headers: dict, body: byt
     """Gửi request tới api.revenuecat.com thật, trả về (status, headers, body_bytes)."""
     url = f"https://{UPSTREAM_HOST}{path}"
 
-    # Clone headers, loại bỏ hop-by-hop và Host (sẽ set lại)
+    # Clone headers, loại bỏ hop-by-hop và ép dùng gzip/deflate tránh lỗi Brotli (br)
     fwd_headers = {
         k: v for k, v in headers.items()
-        if k.lower() not in ("host", "content-length", "transfer-encoding", "connection")
+        if k.lower() not in (
+            "host", "content-length", "transfer-encoding", "connection", "accept-encoding"
+        )
     }
     fwd_headers["Host"] = UPSTREAM_HOST
+    fwd_headers["Accept-Encoding"] = "gzip, deflate"
 
     connector = TCPConnector(family=socket.AF_INET)
     timeout = ClientTimeout(total=20)

@@ -152,9 +152,12 @@ async def test_inject(uid: str = "HEALTHCHECK") -> dict:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
+    headers = {
+        "Authorization": "Bearer appl_JngFETzdodyLmCREOlwTUtXdQik"
+    }
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, ssl=ctx, timeout=aiohttp.ClientTimeout(total=8)) as r:
+            async with s.get(url, headers=headers, ssl=ctx, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 data = await r.json()
                 gold = (data.get("subscriber", {})
                             .get("entitlements", {})
@@ -382,11 +385,15 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def cmd_test(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = ctx.args[0] if ctx.args else "TESTUID_BOT"
-    msg = await update.message.reply_text(f"Dang test UID: `{uid}`...", parse_mode="Markdown")
-    res = await test_inject(uid)
+    target = ctx.args[0] if ctx.args else "TESTUID_BOT"
+    if target.startswith("@") or len(target) != 28:
+        resolved, _ = await resolve_uid(target)
+        if resolved:
+            target = resolved
+    msg = await update.message.reply_text(f"Dang test UID: `{target}`...", parse_mode="Markdown")
+    res = await test_inject(target)
     if res.get("ok") and res.get("has_gold"):
-        text = f"✅ *Thanh cong!*\nUID: `{uid}`\nExpires: `{res['expires']}`"
+        text = f"✅ *Thanh cong!*\nUID: `{target}`\nExpires: `{res['expires']}`"
     elif res.get("ok"):
         text = f"⚠️ Proxy OK nhung khong thay Gold\nHTTP: `{res['status']}`"
     else:
