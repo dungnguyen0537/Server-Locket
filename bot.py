@@ -16,9 +16,9 @@ from telegram.ext import (
 BOT_TOKEN    = "8811544353:AAF_WvyiObO0SQ4eFntICTsIPAERfyVRW0Q"
 ADMIN_IDS    = [6630785148]
 PROXY_HOST   = os.environ.get("PROXY_HOST", "127.0.0.1")
-PROXY_PORT   = int(os.environ.get("PROXY_PORT", "8443"))
-SERVICE_NAME = "locketgold-proxy"
-DB_PATH      = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "bot_data.db"))
+PROXY_PORT   = int(os.environ.get("PROXY_PORT", "443"))
+SERVICE_NAME = "locket-proxy"
+DB_PATH      = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "bot_data.db"))
 
 
 def is_admin(uid: int) -> bool:
