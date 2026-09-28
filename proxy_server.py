@@ -1,0 +1,477 @@
+"""
+proxy_server.py — RevenueCat HTTPS Reverse Proxy với Gold Injection
+
+Flow:
+  iOS App -> DNS trỏ về VPS -> VPS (port 443, cert fake revenuecat.com)
+  -> Forward tới api.revenuecat.com thật -> Nhận response -> Inject Gold -> Trả về App
+
+Chạy: python proxy_server.py
+Cần: pip install aiohttp aiohttp-socks cryptography
+"""
+
+import asyncio
+import ssl
+import json
+import os
+import re
+import sqlite3
+import logging
+import datetime
+from aiohttp import web, ClientSession, TCPConnector, ClientTimeout
+import socket
+
+# --------------- Config ---------------
+LISTEN_HOST = "0.0.0.0"
+LISTEN_PORT = 443
+UPSTREAM_HOST = "api.revenuecat.com"
+UPSTREAM_PORT = 443
+
+CERTS_DIR = os.path.join(os.path.dirname(__file__), "certs")
+SERVER_CERT = os.path.join(CERTS_DIR, "server.crt")
+SERVER_KEY  = os.path.join(CERTS_DIR, "server.key")
+
+MAIN_DB_PATH = os.path.join(os.path.dirname(__file__), "bot_data.db")
+
+# Default Gold dates
+FAKE_EXPIRES_DATE       = "2099-12-31T23:59:59Z"
+FAKE_PURCHASE_DATE      = "2024-01-01T00:00:00Z"
+FAKE_ORIGINAL_PUR_DATE  = "2024-01-01T00:00:00Z"
+
+# Kiem tra quyen theo database (chi UID duoc admin bat tren Bot moi len Gold)
+CHECK_DB_ACTIVATION = True
+
+# --------------- Logging ---------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+log = logging.getLogger("proxy")
+
+
+# --------------- DB Helper ---------------
+def is_uid_activated(uid: str) -> bool:
+    """Kiểm tra xem uid có Gold đang active trong DB hệ thống không."""
+    if not CHECK_DB_ACTIVATION:
+        return True  # free mode: inject tất cả
+    if not uid or not os.path.exists(MAIN_DB_PATH):
+        return False
+    try:
+        conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+        cur = conn.cursor()
+        # Tìm trong bảng upgrades: locket_uid = uid và status = 'success'
+        cur.execute(
+            "SELECT 1 FROM upgrades WHERE locket_uid = ? AND status = 'success' LIMIT 1",
+            (uid,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        log.warning(f"DB check error for {uid}: {e}")
+        return False
+
+
+def get_uid_expiry(uid: str) -> str:
+    """Lấy ngày hết hạn Gold từ DB. Nếu không có -> dùng FAKE_EXPIRES_DATE."""
+    if not os.path.exists(MAIN_DB_PATH):
+        return FAKE_EXPIRES_DATE
+    try:
+        conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT expires_at FROM upgrades
+            WHERE locket_uid = ? AND status = 'success'
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (uid,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            # expires_at có thể là timestamp hoặc ISO string
+            expires = row[0]
+            # Nếu là int timestamp
+            if isinstance(expires, (int, float)):
+                dt = datetime.datetime.utcfromtimestamp(expires)
+                return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return str(expires)
+    except Exception as e:
+        log.warning(f"DB expiry error for {uid}: {e}")
+    return FAKE_EXPIRES_DATE
+
+
+# --------------- Gold Injection ---------------
+FAKE_ENTITLEMENT = {
+    "expires_date": FAKE_EXPIRES_DATE,
+    "grace_period_expires_date": None,
+    "product_identifier": "com.locket.Locket.gold.annual",
+    "product_plan_identifier": None,
+    "purchase_date": FAKE_PURCHASE_DATE,
+    "store": "app_store",
+    "unsubscribe_detected_at": None,
+    "billing_issues_detected_at": None,
+    "is_sandbox": False,
+    "original_purchase_date": FAKE_ORIGINAL_PUR_DATE,
+    "ownership_type": "PURCHASED",
+    "period_type": "normal"
+}
+
+FAKE_SUBSCRIPTION = {
+    "billing_issues_detected_at": None,
+    "expires_date": FAKE_EXPIRES_DATE,
+    "grace_period_expires_date": None,
+    "is_sandbox": False,
+    "original_purchase_date": FAKE_ORIGINAL_PUR_DATE,
+    "ownership_type": "PURCHASED",
+    "period_type": "normal",
+    "product_plan_identifier": None,
+    "purchase_date": FAKE_PURCHASE_DATE,
+    "refunded_at": None,
+    "store": "app_store",
+    "store_transaction_id": "2000000000000001",
+    "unsubscribe_detected_at": None
+}
+
+def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
+    """Sửa response subscriber để inject Gold entitlement."""
+    expires = get_uid_expiry(uid)
+
+    ent = FAKE_ENTITLEMENT.copy()
+    ent["expires_date"] = expires
+
+    sub_entry = FAKE_SUBSCRIPTION.copy()
+    sub_entry["expires_date"] = expires
+
+    subscriber = data.setdefault("subscriber", {})
+    # Inject entitlement
+    entitlements = subscriber.setdefault("entitlements", {})
+    entitlements["Gold"] = ent
+
+    # Inject subscription product
+    subscriptions = subscriber.setdefault("subscriptions", {})
+    subscriptions["com.locket.Locket.gold.annual:com.locket.Locket.gold.annual.base"] = sub_entry
+
+    # Inject non_subscriptions nếu cần
+    non_subs = subscriber.setdefault("non_subscriptions", {})
+
+    log.info(f"[INJECT] Gold injected for uid={uid}, expires={expires}")
+    return data
+
+
+def inject_gold_into_receipt(data: dict, uid: str) -> dict:
+    """Sửa response POST /receipts để báo Gold active."""
+    return inject_gold_into_subscriber(data, uid)
+
+
+# --------------- Regex Patterns ---------------
+# Match GET /v1/subscribers/{uid}  (uid không chứa /)
+RE_SUBSCRIBERS = re.compile(r"^/v1/subscribers/([^/]+)$")
+# Match POST /v1/subscribers/{uid}/receipts  hoặc  POST /v1/receipts
+RE_RECEIPTS    = re.compile(r"^(/v1/subscribers/[^/]+)?/v1/receipts$|^/v1/receipts$")
+
+
+def extract_uid_from_path(path: str) -> str | None:
+    """Lấy app_user_id từ URL path."""
+    m = RE_SUBSCRIBERS.match(path)
+    if m:
+        from urllib.parse import unquote
+        return unquote(m.group(1))
+    return None
+
+
+# --------------- Upstream Request ---------------
+async def forward_to_revenuecat(method: str, path: str, headers: dict, body: bytes) -> tuple:
+    """Gửi request tới api.revenuecat.com thật, trả về (status, headers, body_bytes)."""
+    url = f"https://{UPSTREAM_HOST}{path}"
+
+    # Clone headers, loại bỏ hop-by-hop và Host (sẽ set lại)
+    fwd_headers = {
+        k: v for k, v in headers.items()
+        if k.lower() not in ("host", "content-length", "transfer-encoding", "connection")
+    }
+    fwd_headers["Host"] = UPSTREAM_HOST
+
+    connector = TCPConnector(family=socket.AF_INET)
+    timeout = ClientTimeout(total=20)
+
+    async with ClientSession(connector=connector, timeout=timeout) as session:
+        req_kwargs = {
+            "headers": fwd_headers,
+            "allow_redirects": False,
+            "ssl": True,
+        }
+        if body:
+            req_kwargs["data"] = body
+
+        async with session.request(method, url, **req_kwargs) as resp:
+            resp_body = await resp.read()
+            resp_headers = dict(resp.headers)
+            return resp.status, resp_headers, resp_body
+
+
+# --------------- Request Handler ---------------
+async def handle_request(request: web.Request) -> web.Response:
+    path = request.path
+    if request.query_string:
+        path = f"{path}?{request.query_string}"
+
+    method = request.method
+    body = await request.read()
+    headers = dict(request.headers)
+
+    log.info(f"[{method}] {path}")
+
+    # Forward request tới RevenueCat thật
+    try:
+        status, resp_headers, resp_body = await forward_to_revenuecat(method, path, headers, body)
+    except Exception as e:
+        log.error(f"Upstream error: {e}")
+        return web.Response(status=502, text=f"Upstream error: {e}")
+
+    # Quyết định có inject không
+    should_inject = False
+    uid = None
+
+    clean_path = request.path  # không có query string
+
+    m_sub = RE_SUBSCRIBERS.match(clean_path)
+    if m_sub and method == "GET":
+        from urllib.parse import unquote
+        uid = unquote(m_sub.group(1))
+        should_inject = is_uid_activated(uid)
+
+    elif clean_path.endswith("/receipts") and method == "POST":
+        # Lấy uid từ request body hoặc path
+        try:
+            req_json = json.loads(body)
+            uid = req_json.get("app_user_id", "")
+        except Exception:
+            uid = ""
+        if not uid:
+            # thử lấy từ path /v1/subscribers/{uid}/receipts
+            m2 = re.match(r"^/v1/subscribers/([^/]+)/receipts$", clean_path)
+            if m2:
+                from urllib.parse import unquote
+                uid = unquote(m2.group(1))
+        should_inject = uid and is_uid_activated(uid)
+
+    if should_inject and status in (200, 201):
+        try:
+            data = json.loads(resp_body)
+            if clean_path.endswith("/receipts"):
+                data = inject_gold_into_receipt(data, uid)
+            else:
+                data = inject_gold_into_subscriber(data, uid)
+            resp_body = json.dumps(data).encode("utf-8")
+            resp_headers["Content-Length"] = str(len(resp_body))
+            resp_headers.pop("Content-Encoding", None)  # body đã decode, bỏ gzip
+        except Exception as e:
+            log.error(f"Inject error for {uid}: {e}")
+    elif should_inject:
+        # RevenueCat trả lỗi nhưng ta vẫn cần trả fake Gold
+        # Tạo fake subscriber response hoàn toàn
+        log.info(f"[INJECT OVERRIDE] Upstream {status}, generating fake response for {uid}")
+        fake = {
+            "request_date": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "request_date_ms": int(datetime.datetime.utcnow().timestamp() * 1000),
+            "subscriber": {
+                "entitlements": {},
+                "first_seen": FAKE_PURCHASE_DATE,
+                "last_seen": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "management_url": None,
+                "non_subscriptions": {},
+                "original_app_user_id": uid,
+                "original_application_version": "5.41.0",
+                "original_purchase_date": FAKE_ORIGINAL_PUR_DATE,
+                "other_purchases": {},
+                "subscriptions": {}
+            }
+        }
+        fake = inject_gold_into_subscriber(fake, uid)
+        resp_body = json.dumps(fake).encode("utf-8")
+        status = 200
+        resp_headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(resp_body))
+        }
+
+    # Lọc hop-by-hop headers trước khi trả về
+    clean_resp_headers = {
+        k: v for k, v in resp_headers.items()
+        if k.lower() not in (
+            "transfer-encoding", "connection", "keep-alive",
+            "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade"
+        )
+    }
+
+    return web.Response(
+        status=status,
+        headers=clean_resp_headers,
+        body=resp_body
+    )
+
+
+# --------------- DNS Server (UDP port 53) ---------------
+class DnsProtocol(asyncio.DatagramProtocol):
+    """
+    Minimal DNS server: trả về VPS IP cho api.revenuecat.com,
+    forward tất cả query khác tới 8.8.8.8 (Google DNS).
+    """
+
+    UPSTREAM_DNS = ("8.8.8.8", 53)
+
+    def __init__(self, vps_ip: str):
+        self.vps_ip = vps_ip
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data: bytes, addr):
+        asyncio.ensure_future(self._handle(data, addr))
+
+    async def _handle(self, data: bytes, addr):
+        try:
+            # Minimal DNS parse: lấy query name
+            # DNS header: 12 bytes, sau đó là QNAME encoded
+            if len(data) < 13:
+                return
+
+            # Parse QNAME từ offset 12
+            qname = self._parse_qname(data, 12)
+
+            if qname and qname.lower() == "api.revenuecat.com":
+                log.info(f"[DNS] {addr[0]} asked for api.revenuecat.com -> {self.vps_ip}")
+                response = self._build_a_response(data, self.vps_ip)
+                self.transport.sendto(response, addr)
+            else:
+                # Forward tới upstream DNS
+                result = await self._forward_dns(data)
+                if result:
+                    self.transport.sendto(result, addr)
+        except Exception as e:
+            log.debug(f"DNS error: {e}")
+
+    @staticmethod
+    def _parse_qname(data: bytes, offset: int) -> str:
+        labels = []
+        while offset < len(data):
+            length = data[offset]
+            if length == 0:
+                break
+            if length & 0xC0 == 0xC0:  # pointer
+                ptr = ((length & 0x3F) << 8) | data[offset + 1]
+                labels.append(DnsProtocol._parse_qname(data, ptr))
+                break
+            offset += 1
+            labels.append(data[offset:offset + length].decode("ascii", errors="ignore"))
+            offset += length
+        return ".".join(labels)
+
+    @staticmethod
+    def _build_a_response(query: bytes, ip: str) -> bytes:
+        # Transaction ID + flags (response, authoritative)
+        txid = query[:2]
+        flags = b"\x81\x80"  # standard response
+        # QDCOUNT=1, ANCOUNT=1, NSCOUNT=0, ARCOUNT=0
+        counts = b"\x00\x01\x00\x01\x00\x00\x00\x00"
+        # Question section (copy from query offset 12 onwards until QTYPE+QCLASS)
+        # Find end of QNAME in query
+        i = 12
+        while i < len(query) and query[i] != 0:
+            if query[i] & 0xC0 == 0xC0:
+                i += 2
+                break
+            i += query[i] + 1
+        else:
+            i += 1  # skip null byte
+        question = query[12:i + 4]  # include QTYPE+QCLASS (4 bytes)
+
+        # Answer section: pointer to QNAME (0xC00C), TYPE A, CLASS IN, TTL 60, RDLENGTH 4, RDATA
+        ptr = b"\xC0\x0C"
+        type_a = b"\x00\x01"
+        class_in = b"\x00\x01"
+        ttl = b"\x00\x00\x00\x3C"  # 60 seconds
+        rdlen = b"\x00\x04"
+        rdata = bytes(int(x) for x in ip.split("."))
+        answer = ptr + type_a + class_in + ttl + rdlen + rdata
+
+        return txid + flags + counts + question + answer
+
+    async def _forward_dns(self, data: bytes) -> bytes | None:
+        try:
+            loop = asyncio.get_running_loop()
+            transport, protocol = await loop.create_datagram_endpoint(
+                asyncio.DatagramProtocol,
+                remote_addr=self.UPSTREAM_DNS
+            )
+            fut = loop.create_future()
+
+            class _Proto(asyncio.DatagramProtocol):
+                def datagram_received(self, d, _):
+                    if not fut.done():
+                        fut.set_result(d)
+
+            t2, _ = await loop.create_datagram_endpoint(
+                _Proto, remote_addr=self.UPSTREAM_DNS
+            )
+            t2.sendto(data)
+            try:
+                result = await asyncio.wait_for(fut, timeout=3.0)
+                return result
+            except asyncio.TimeoutError:
+                return None
+            finally:
+                t2.close()
+        except Exception:
+            return None
+
+
+# --------------- Main ---------------
+async def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="LocketGold DNS+HTTPS Proxy")
+    parser.add_argument("--host", default=LISTEN_HOST)
+    parser.add_argument("--port", type=int, default=LISTEN_PORT)
+    parser.add_argument("--no-dns", action="store_true", help="Disable built-in DNS server")
+    parser.add_argument("--free-mode", action="store_true", help="Inject Gold for ALL users (no DB check)")
+    parser.add_argument("--vps-ip", default="", help="VPS public IP (for DNS responses)")
+    args = parser.parse_args()
+
+    global CHECK_DB_ACTIVATION
+    if args.free_mode:
+        CHECK_DB_ACTIVATION = False
+        log.warning("[!] FREE MODE: Injecting Gold for ALL users, no DB check!")
+
+    # SSL context
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_ctx.load_cert_chain(SERVER_CERT, SERVER_KEY)
+
+    # HTTPS server
+    app = web.Application()
+    app.router.add_route("*", "/{path_info:.*}", handle_request)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, args.host, args.port, ssl_context=ssl_ctx)
+    await site.start()
+    log.info(f"[*] HTTPS Proxy listening on {args.host}:{args.port}")
+
+    # DNS server
+    if not args.no_dns and args.vps_ip:
+        loop = asyncio.get_running_loop()
+        await loop.create_datagram_endpoint(
+            lambda: DnsProtocol(args.vps_ip),
+            local_addr=("0.0.0.0", 53)
+        )
+        log.info(f"[*] DNS Server listening on 0.0.0.0:53 -> VPS IP: {args.vps_ip}")
+    elif not args.no_dns and not args.vps_ip:
+        log.warning("[!] DNS server skipped: --vps-ip not provided. Use --vps-ip <your_vps_public_ip>")
+
+    log.info("[*] Proxy ready. Waiting for connections...")
+    await asyncio.Event().wait()  # run forever
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
