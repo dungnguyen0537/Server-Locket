@@ -39,8 +39,8 @@ FAKE_EXPIRES_DATE       = "2099-12-31T23:59:59Z"
 FAKE_PURCHASE_DATE      = "2024-01-01T00:00:00Z"
 FAKE_ORIGINAL_PUR_DATE  = "2024-01-01T00:00:00Z"
 
-# Kiem tra quyen theo database (chi UID duoc admin bat tren Bot moi len Gold)
-CHECK_DB_ACTIVATION = True
+# Kiem tra quyen theo database (False = tu dong kich hoat cho tat ca thiet bi qua DNS giong competitor)
+CHECK_DB_ACTIVATION = False
 
 from collections import deque
 RECENT_LOGS = deque(maxlen=200)
@@ -204,91 +204,61 @@ FAKE_SUBSCRIPTION = {
 }
 
 def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
-    """Sửa response subscriber để inject Gold entitlement với ngày nâng thật."""
+    """Sửa response subscriber để inject Gold entitlement chuẩn App Store TestFlight (Build 32)."""
     pur_date, exp_date = get_uid_dates(uid)
-    now_ms = int(time.time() * 1000)
-
-    data["Attention"] = "Locket Gold By DungNguyen05"
-
-    # Sản phẩm Gold chính thức TestFlight / US của Locket để mở full 10s video, đăng riêng tư và QR
-    primary_prod = "com.locket.Locket.gold.annual"
-
-    ent = FAKE_ENTITLEMENT.copy()
-    ent["purchase_date"] = pur_date
-    ent["original_purchase_date"] = pur_date
-    ent["expires_date"] = exp_date
-    ent["product_identifier"] = primary_prod
-    ent["is_sandbox"] = False
-
-    sub_entry = FAKE_SUBSCRIPTION.copy()
-    sub_entry["purchase_date"] = pur_date
-    sub_entry["original_purchase_date"] = pur_date
-    sub_entry["expires_date"] = exp_date
-    sub_entry["is_sandbox"] = False
+    if not exp_date or exp_date == FAKE_EXPIRES_DATE:
+        exp_date = (datetime.datetime.utcnow() + datetime.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     subscriber = data.setdefault("subscriber", {})
 
-    # 1. Inject TẤT CẢ các entitlement keys mà Locket có thể kiểm tra
-    entitlements = subscriber.setdefault("entitlements", {})
-    all_ent_keys = [
-        "Gold", "gold", "Pro", "pro", "Premium", "premium", 
-        "all_features", "locket_gold", "Plus", "plus",
-        "extended_video", "video_10s", "private_moments", "can_post_privately"
-    ]
-    for key in all_ent_keys:
-        entitlements[key] = ent
-
-    # 2. Inject TẤT CẢ các product identifiers mà các phiên bản Locket kiểm tra
-    subscriptions = subscriber.setdefault("subscriptions", {})
-    all_prod_ids = [
-        "com.locket.Locket.gold.annual",
-        "locket_1600_1y",
-        "locket_3600_1y",
-        "com.locket.Locket.gold.lifetime",
-        "com.locket.Locket.gold.monthly",
-        "com.locket02.premium.yearly",
-        "com.locket02.premium.monthly",
-        "com.locket.gold",
-        "locket_gold_yearly",
-        "locket_gold_monthly",
-        "com.locket.Locket.gold.annual:com.locket.Locket.gold.annual.base",
-        "com.locket.Locket.gold.lifetime:com.locket.Locket.gold.lifetime.base",
-    ]
-    for pid in all_prod_ids:
-        subscriptions[pid] = sub_entry
-
-    # 3. Subscriber Attributes (Vượt rào cản quốc gia US & bật chế độ Dev Beta)
-    subscriber["subscriber_attributes"] = {
-        "$country": {"value": "US", "updated_at_ms": now_ms},
-        "$locale": {"value": "en_US", "updated_at_ms": now_ms},
-        "country": {"value": "US", "updated_at_ms": now_ms},
-        "can_post_privately": {"value": "true", "updated_at_ms": now_ms},
-        "video_duration_limit": {"value": "10", "updated_at_ms": now_ms},
-        "video_10s": {"value": "true", "updated_at_ms": now_ms},
-        "video_15s": {"value": "true", "updated_at_ms": now_ms},
-        "private_moments": {"value": "true", "updated_at_ms": now_ms},
-        "all_features": {"value": "true", "updated_at_ms": now_ms},
-        "qr_code_enabled": {"value": "true", "updated_at_ms": now_ms},
-        "show_qr_code": {"value": "true", "updated_at_ms": now_ms},
-        "profile_qr_enabled": {"value": "true", "updated_at_ms": now_ms},
-        "can_share_qr": {"value": "true", "updated_at_ms": now_ms},
-        "is_beta": {"value": "true", "updated_at_ms": now_ms},
-        "is_dev": {"value": "true", "updated_at_ms": now_ms},
-        "is_internal": {"value": "true", "updated_at_ms": now_ms},
-        "developer_mode": {"value": "true", "updated_at_ms": now_ms},
-        "dev_beta": {"value": "true", "updated_at_ms": now_ms},
-        "testflight": {"value": "true", "updated_at_ms": now_ms},
-        "beta_tester": {"value": "true", "updated_at_ms": now_ms},
+    # 1. Entitlements: Chỉ duy nhất 'Gold' với product_identifier='locket_1600_1y'
+    subscriber["entitlements"] = {
+        "Gold": {
+            "expires_date": exp_date,
+            "grace_period_expires_date": None,
+            "product_identifier": "locket_1600_1y",
+            "purchase_date": "2026-02-14T02:48:27Z"
+        }
     }
 
-    # 4. Đảm bảo cấu trúc subscriber đầy đủ chuẩn Apple StoreKit / RevenueCat
+    # 2. Subscriptions: Chuẩn biên lai App Store của bản Locket Gold gốc
+    subscriber["subscriptions"] = {
+        "locket_1600_1y": {
+            "auto_resume_date": None,
+            "billing_issues_detected_at": None,
+            "display_name": "locket_1600_1y",
+            "expires_date": exp_date,
+            "grace_period_expires_date": None,
+            "is_sandbox": False,
+            "management_url": "https://apps.apple.com/account/subscriptions",
+            "original_purchase_date": "2026-02-14T02:48:27Z",
+            "ownership_type": "PURCHASED",
+            "period_type": "intro",
+            "price": {
+                "amount": 299000.0,
+                "currency": "VND"
+            },
+            "purchase_date": "2026-02-14T02:48:27Z",
+            "refunded_at": None,
+            "store": "app_store",
+            "store_transaction_id": "520002661802592",
+            "unsubscribe_detected_at": None
+        }
+    }
+
+    # 3. Thông tin cốt lõi: TestFlight Build 32 từ 2022 -> Mở Hiện Mã QR, Quay video 10s & Đăng riêng tư
+    subscriber["original_app_user_id"] = uid
+    subscriber["original_application_version"] = "32"
+    subscriber["original_purchase_date"] = "2022-02-13T10:49:37Z"
+    subscriber["first_seen"] = "2022-02-13T10:49:37Z"
     subscriber["management_url"] = "https://apps.apple.com/account/subscriptions"
-    subscriber["original_purchase_date"] = pur_date
-    subscriber["original_application_version"] = "2006"
     subscriber.setdefault("non_subscriptions", {})
     subscriber.setdefault("other_purchases", {})
 
-    log.info(f"[INJECT] Gold injected for uid={uid}, purchase={pur_date}, expires={exp_date}")
+    # Không để trường lạ gây lỗi bộ giải mã Decodable của Locket iOS
+    data.pop("Attention", None)
+
+    log.info(f"[INJECT] Gold (TestFlight Build 32) injected for uid={uid}, expires={exp_date}")
     return data
 
 
@@ -546,8 +516,8 @@ async def handle_request(request: web.Request) -> web.Response:
     # -------------------------------------------------------------
     if clean_path == "/internal/version" and method == "GET":
         return web.json_response({
-            "version": "2.2.0",
-            "features": "qr_code, 10s_video, private_post, anonymous_auto_gold",
+            "version": "2.3.0",
+            "features": "testflight_build32, auto_gold_all, clean_firebase_forward, qr_code, 10s_video, private_post",
             "time": datetime.datetime.utcnow().isoformat()
         })
 
@@ -565,235 +535,17 @@ async def handle_request(request: web.Request) -> web.Response:
         return web.Response(status=404, text="Not found")
 
     # -------------------------------------------------------------
-    # Firebase Remote Config: Intercept và Inject 10s Video & Đăng Riêng Tư
-    # -------------------------------------------------------------
+    # Firebase Remote Config: Forward sạch tới Google kèm US Spoofing (giống competitor)
     if "firebaseremoteconfig" in raw_host or "firebaseremoteconfig" in path:
         target_upstream = "firebaseremoteconfig.googleapis.com"
         try:
             status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
+            log.info(f"[FIREBASE] Upstream status {status}, size {len(resp_body)} bytes")
         except Exception as e:
             log.error(f"[FIREBASE] Upstream error: {e}")
             status = 502
             resp_headers = {}
             resp_body = b""
-
-        feature_flags = {
-            # Quay video 10s & 15s (Locket video length - snake_case & camelCase)
-            "video_duration_limit": "10",
-            "max_video_seconds": "10",
-            "video_seconds": "10",
-            "max_video_duration": "10",
-            "video_length_seconds": "10",
-            "video_duration": "10",
-            "video_max_duration": "10",
-            "video_length": "10",
-            "max_video_length": "10",
-            "can_record_video": "true",
-            "video_recording_enabled": "true",
-            "video_enabled": "true",
-            "video_10s_enabled": "true",
-            "can_record_10s": "true",
-            "allow_10s_video": "true",
-            "video_10s": "true",
-            "video_15s_enabled": "true",
-            "video_15s": "true",
-            "can_record_15s": "true",
-            "enable_15s_video": "true",
-            "allow_15s_video": "true",
-            "extended_video": "true",
-            "extended_video_enabled": "true",
-            "gold_video_duration": "10",
-            
-            # camelCase equivalents
-            "videoDurationLimit": "10",
-            "maxVideoDuration": "10",
-            "maxVideoSeconds": "10",
-            "videoSeconds": "10",
-            "videoLengthSeconds": "10",
-            "videoDuration": "10",
-            "videoMaxDuration": "10",
-            "canRecordVideo": "true",
-            "videoRecordingEnabled": "true",
-            "videoEnabled": "true",
-            "video10sEnabled": "true",
-            "canRecord10s": "true",
-            "allow10sVideo": "true",
-            "video10s": "true",
-            "video15sEnabled": "true",
-            "video15s": "true",
-            "canRecord15s": "true",
-            "enable15sVideo": "true",
-            "allow15sVideo": "true",
-            "extendedVideo": "true",
-            "extendedVideoEnabled": "true",
-            "goldVideoDuration": "10",
-
-            # Chế độ đăng riêng tư / Bạn bè chọn lọc (Audience & Private Moments)
-            "can_post_privately": "true",
-            "private_moments_enabled": "true",
-            "private_moments": "true",
-            "private_posts_enabled": "true",
-            "enable_private_moments": "true",
-            "allow_private_moments": "true",
-            "private_audience_enabled": "true",
-            "audience_selection_enabled": "true",
-            "selective_sharing_enabled": "true",
-            "selected_friends_enabled": "true",
-            "allow_audience_selection": "true",
-            "friends_selection_enabled": "true",
-            "private_mode_enabled": "true",
-            "direct_sharing_enabled": "true",
-            "post_audience_selection": "true",
-            "send_to_specific_friends": "true",
-
-            # camelCase equivalents
-            "canPostPrivately": "true",
-            "privateMomentsEnabled": "true",
-            "privateMoments": "true",
-            "privatePostsEnabled": "true",
-            "enablePrivateMoments": "true",
-            "allowPrivateMoments": "true",
-            "privateAudienceEnabled": "true",
-            "audienceSelectionEnabled": "true",
-            "selectiveSharingEnabled": "true",
-            "selectedFriendsEnabled": "true",
-            "allowAudienceSelection": "true",
-            "friendsSelectionEnabled": "true",
-            "privateModeEnabled": "true",
-            "directSharingEnabled": "true",
-            "postAudienceSelection": "true",
-            "sendToSpecificFriends": "true",
-
-            # Vượt giới hạn quốc gia US & bật tính năng thử nghiệm
-            "us_features_enabled": "true",
-            "is_us_user": "true",
-            "country_code": "US",
-            "country": "US",
-            "isUSUser": "true",
-            "countryCode": "US",
-            "enable_experimental_features": "true",
-            "experiments_enabled": "true",
-            "beta_features_enabled": "true",
-            "all_features_enabled": "true",
-            "gold_features_enabled": "true",
-            "goldFeaturesEnabled": "true",
-
-            # Hiển thị mã QR trên trang cá nhân (Profile QR code - snake_case & camelCase)
-            "qr_code_enabled": "true",
-            "show_qr_code": "true",
-            "profile_qr_enabled": "true",
-            "profile_qr_code_enabled": "true",
-            "can_share_qr": "true",
-            "qr_share_enabled": "true",
-            "show_profile_qr": "true",
-            "enable_profile_qr": "true",
-            "friend_qr_enabled": "true",
-            "enable_qr_code": "true",
-            "qr_enabled": "true",
-            "user_qr_enabled": "true",
-            "qr_profile_button": "true",
-            "qr_code_profile": "true",
-            "share_profile_qr": "true",
-            "qrCodeEnabled": "true",
-            "showQrCode": "true",
-            "profileQrEnabled": "true",
-            "profileQrCodeEnabled": "true",
-            "canShareQr": "true",
-            "qrShareEnabled": "true",
-            "showProfileQr": "true",
-            "enableProfileQr": "true",
-            "friendQrEnabled": "true",
-            "enableQrCode": "true",
-            "qrEnabled": "true",
-            "userQrEnabled": "true",
-            "qrProfileButton": "true",
-            "qrCodeProfile": "true",
-            "shareProfileQr": "true",
-
-            # Bản Dev Beta / TestFlight Internal Build flags
-            "is_dev": "true",
-            "is_beta": "true",
-            "is_internal": "true",
-            "is_internal_user": "true",
-            "is_internal_build": "true",
-            "internal_build": "true",
-            "internal_features_enabled": "true",
-            "testflight": "true",
-            "is_testflight": "true",
-            "testflight_build": "true",
-            "is_dogfood": "true",
-            "dogfood_enabled": "true",
-            "beta_tester": "true",
-            "developer_mode": "true",
-            "dev_beta": "true",
-            "is_employee": "true",
-            "employee": "true",
-            "admin_mode": "true",
-            "app_environment": "development",
-            "environment": "development",
-            "build_type": "beta",
-            "channel": "beta",
-            "release_channel": "beta",
-            "isDev": "true",
-            "isBeta": "true",
-            "isInternal": "true",
-            "isInternalUser": "true",
-            "isInternalBuild": "true",
-            "internalBuild": "true",
-            "internalFeaturesEnabled": "true",
-            "isTestflight": "true",
-            "testflightBuild": "true",
-            "isDogfood": "true",
-            "dogfoodEnabled": "true",
-            "developerMode": "true",
-            "devBeta": "true",
-            "betaFeaturesEnabled": "true",
-            "enableBetaFeatures": "true",
-            "allowBetaFeatures": "true",
-            "enableExperimentalFeatures": "true",
-            "experimentsEnabled": "true",
-            "adminMode": "true",
-            "isEmployee": "true",
-            "appEnvironment": "development",
-            "buildType": "beta",
-            "releaseChannel": "beta",
-        }
-
-        ver_ts = str(int(time.time()))
-        if status in (200, 201) and resp_body:
-            try:
-                data = json.loads(resp_body.decode("utf-8", errors="ignore"))
-                entries = data.get("entries")
-                if entries is None:
-                    entries = {}
-                    data["entries"] = entries
-
-                log.info(f"[FIREBASE] Upstream remote config fetched. Key count: {len(entries)}")
-                entries.update(feature_flags)
-                data["entries"] = entries
-                data["state"] = "UPDATE"
-                data["templateVersion"] = ver_ts
-
-                resp_body = json.dumps(data).encode("utf-8")
-                resp_headers["Content-Length"] = str(len(resp_body))
-                resp_headers.pop("Content-Encoding", None)
-                log.info("[FIREBASE] Injected 10s video and private post flags into upstream response")
-            except Exception as fe:
-                log.error(f"[FIREBASE INJECT ERROR] {fe}")
-        else:
-            # Fallback nếu Google trả lỗi, rate limit hoặc 304 -> Vẫn trả config hợp lệ cho app
-            log.info(f"[FIREBASE OVERRIDE] Upstream {status}, returning generated feature config")
-            fake_config = {
-                "entries": feature_flags,
-                "state": "UPDATE",
-                "templateVersion": ver_ts
-            }
-            resp_body = json.dumps(fake_config).encode("utf-8")
-            status = 200
-            resp_headers = {
-                "Content-Type": "application/json",
-                "Content-Length": str(len(resp_body))
-            }
 
         clean_resp_headers = {
             k: v for k, v in resp_headers.items()
