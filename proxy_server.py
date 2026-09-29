@@ -206,8 +206,10 @@ FAKE_SUBSCRIPTION = {
 def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     """Sửa response subscriber để inject Gold entitlement chuẩn locket_gold_annual của đối thủ."""
     pur_date, exp_date = get_uid_dates(uid)
+    if not pur_date:
+        pur_date = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     if not exp_date or exp_date == FAKE_EXPIRES_DATE:
-        exp_date = "2099-12-31T23:59:59Z"
+        exp_date = (datetime.datetime.utcnow() + datetime.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
     now_ms = int(time.time() * 1000)
@@ -221,9 +223,9 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     subscriber["aliases"] = [uid]
     subscriber["app_user_id"] = uid
     subscriber["original_app_user_id"] = uid
-    subscriber["first_seen"] = "2020-01-01T00:00:00Z"
+    subscriber["first_seen"] = pur_date
     subscriber["last_seen"] = now_iso
-    subscriber["original_purchase_date"] = "2020-01-01T00:00:00Z"
+    subscriber["original_purchase_date"] = pur_date
     subscriber["original_application_version"] = None
     subscriber["management_url"] = None
     subscriber["subscriber_attributes"] = {}
@@ -236,7 +238,7 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
             "expires_date": exp_date,
             "grace_period_expires_date": None,
             "product_identifier": "locket_gold_annual",
-            "purchase_date": "2020-01-01T00:00:00Z"
+            "purchase_date": pur_date
         }
     }
 
@@ -248,11 +250,11 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
             "expires_date": exp_date,
             "grace_period_expires_date": None,
             "is_sandbox": False,
-            "original_purchase_date": "2020-01-01T00:00:00Z",
+            "original_purchase_date": pur_date,
             "ownership_type": "PURCHASED",
             "period_type": "normal",
             "product_plan_identifier": None,
-            "purchase_date": "2020-01-01T00:00:00Z",
+            "purchase_date": pur_date,
             "refunded_at": None,
             "store": "app_store",
             "unsubscribe_detected_at": None
@@ -262,7 +264,7 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     # Bỏ các header/trường lạ không chuẩn
     data.pop("Attention", None)
 
-    log.info(f"[INJECT] Gold (locket_gold_annual) injected for uid={uid}, expires={exp_date}")
+    log.info(f"[INJECT] Gold (locket_gold_annual) injected for uid={uid}, purchase={pur_date}, expires={exp_date}")
     return data
 
 
