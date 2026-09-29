@@ -261,7 +261,11 @@ def db_activate(uid: str, username: str, days: int) -> dict:
             "start_at": start_str,
             "expires_at": expires_str
         }).encode("utf-8")
-        req = urllib.request.Request("https://locketgold.shop/api/internal/activate", data=payload, headers={"Content-Type": "application/json"})
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) LocketProxy/1.0"
+        }
+        req = urllib.request.Request("https://locketgold.shop/api/internal/activate", data=payload, headers=headers)
         urllib.request.urlopen(req, context=ctx, timeout=3)
     except Exception:
         pass
@@ -332,7 +336,11 @@ def db_deactivate(target: str) -> bool:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         payload = json.dumps({"target": clean_target, "uid": resolved_uid, "username": resolved_user}).encode("utf-8")
-        req = urllib.request.Request("https://locketgold.shop/api/internal/deactivate", data=payload, headers={"Content-Type": "application/json"})
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) LocketProxy/1.0"
+        }
+        req = urllib.request.Request("https://locketgold.shop/api/internal/deactivate", data=payload, headers=headers)
         urllib.request.urlopen(req, context=ctx, timeout=3)
     except Exception:
         pass
