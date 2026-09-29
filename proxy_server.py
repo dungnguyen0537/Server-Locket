@@ -87,14 +87,15 @@ def init_db():
 init_db()
 
 def is_uid_activated(uid: str) -> bool:
-    """Kiểm tra xem uid có Gold đang active trong DB hệ thống không (hỗ trợ Memory Cache)."""
+    """Kiểm tra xem uid/username có Gold đang active trong DB hệ thống không (hỗ trợ Memory Cache)."""
     if not CHECK_DB_ACTIVATION:
         return True  # free mode: inject tất cả
     if not uid:
         return False
         
+    clean_target = str(uid).strip()
     now = time.time()
-    cached = _UID_CACHE.get(uid)
+    cached = _UID_CACHE.get(clean_target) or _UID_CACHE.get(clean_target.lstrip('@'))
     if cached and (now - cached[3] < CACHE_TTL):
         return cached[0]
 
@@ -107,10 +108,10 @@ def is_uid_activated(uid: str) -> bool:
         cur.execute(
             """
             SELECT created_at, expires_at FROM upgrades 
-            WHERE locket_uid = ? AND status = 'success' 
+            WHERE (locket_uid = ? OR locket_username = ? OR locket_username = ?) AND status = 'success' 
             ORDER BY created_at DESC LIMIT 1
             """,
-            (uid,)
+            (clean_target, clean_target, clean_target.lstrip('@'))
         )
         row = cur.fetchone()
         conn.close()
@@ -118,10 +119,11 @@ def is_uid_activated(uid: str) -> bool:
         if row:
             pur = str(row[0]) if row[0] else datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
             exp = str(row[1]) if row[1] else FAKE_EXPIRES_DATE
-            _UID_CACHE[uid] = (True, pur, exp, now)
+            _UID_CACHE[clean_target] = (True, pur, exp, now)
+            _UID_CACHE[clean_target.lstrip('@')] = (True, pur, exp, now)
             return True
         else:
-            _UID_CACHE[uid] = (False, "", "", now)
+            _UID_CACHE[clean_target] = (False, "", "", now)
             return False
     except Exception as e:
         log.warning(f"DB check error for {uid}: {e}")
@@ -262,6 +264,12 @@ async def forward_to_revenuecat(method: str, path: str, headers: dict, body: byt
         async with session.request(method, url, **req_kwargs) as resp:
             resp_body = await resp.read()
             resp_headers = dict(resp.headers)
+            # aiohttp resp.read() tự động giải nén gzip/deflate, nên dữ liệu trả về là raw decompressed bytes.
+            # Bắt buộc xóa Content-Encoding (case-insensitive) và cập nhật Content-Length thật.
+            for k in list(resp_headers.keys()):
+                if k.lower() in ("content-encoding", "content-length"):
+                    del resp_headers[k]
+            resp_headers["Content-Length"] = str(len(resp_body))
             return resp.status, resp_headers, resp_body
 
 
@@ -294,6 +302,9 @@ async def handle_request(request: web.Request) -> web.Response:
 
             # Cập nhật ngay vào RAM Cache để người dùng mở app ăn Gold lập tức không độ trễ
             _UID_CACHE[u_id] = (True, created_at, expires_at, time.time())
+            if username:
+                _UID_CACHE[username] = (True, created_at, expires_at, time.time())
+                _UID_CACHE[username.lstrip('@')] = (True, created_at, expires_at, time.time())
 
             try:
                 conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
@@ -416,7 +427,7 @@ async def handle_request(request: web.Request) -> web.Response:
         k: v for k, v in resp_headers.items()
         if k.lower() not in (
             "transfer-encoding", "connection", "keep-alive",
-            "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade"
+            "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade", "content-encoding"
         )
     }
 
