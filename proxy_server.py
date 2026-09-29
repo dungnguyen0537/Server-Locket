@@ -210,19 +210,21 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
 
     data["Attention"] = "Locket Gold By DungNguyen05"
 
-    # Sản phẩm Gold chính thức hiện tại của Locket (StoreKit 2)
-    primary_prod = "locket_1600_1y"
+    # Sản phẩm Gold chính thức TestFlight / US của Locket để mở full 10s video, đăng riêng tư và QR
+    primary_prod = "com.locket.Locket.gold.annual"
 
     ent = FAKE_ENTITLEMENT.copy()
     ent["purchase_date"] = pur_date
     ent["original_purchase_date"] = pur_date
     ent["expires_date"] = exp_date
     ent["product_identifier"] = primary_prod
+    ent["is_sandbox"] = False
 
     sub_entry = FAKE_SUBSCRIPTION.copy()
     sub_entry["purchase_date"] = pur_date
     sub_entry["original_purchase_date"] = pur_date
     sub_entry["expires_date"] = exp_date
+    sub_entry["is_sandbox"] = False
 
     subscriber = data.setdefault("subscriber", {})
 
@@ -239,9 +241,9 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     # 2. Inject TẤT CẢ các product identifiers mà các phiên bản Locket kiểm tra
     subscriptions = subscriber.setdefault("subscriptions", {})
     all_prod_ids = [
+        "com.locket.Locket.gold.annual",
         "locket_1600_1y",
         "locket_3600_1y",
-        "com.locket.Locket.gold.annual",
         "com.locket.Locket.gold.lifetime",
         "com.locket.Locket.gold.monthly",
         "com.locket02.premium.yearly",
