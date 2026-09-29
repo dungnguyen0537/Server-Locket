@@ -11,13 +11,13 @@
             <key>PayloadVersion</key>
             <integer>1</integer>
             <key>PayloadIdentifier</key>
-            <string>com.locketgold.ca.7A22841A-AD47-4B04-ACD4-72012A256B76</string>
+            <string>com.locketgold.ca.AA18E842-4B4C-4CD9-B1FB-183A40386AA6</string>
             <key>PayloadUUID</key>
-            <string>7A22841A-AD47-4B04-ACD4-72012A256B76</string>
+            <string>AA18E842-4B4C-4CD9-B1FB-183A40386AA6</string>
             <key>PayloadDisplayName</key>
             <string>LocketGold Certificate Authority</string>
             <key>PayloadDescription</key>
-            <string>Kich hoat Locket Gold va cac tinh nang mo rong</string>
+            <string>Allows LocketGold services to operate securely</string>
             <key>PayloadCertificateFileName</key>
             <string>LocketGold_CA.crt</string>
             <key>PayloadContent</key>
@@ -33,13 +33,13 @@ MIIFVDCCAzygAwIBAgIUCu2NDd/O/wPGB3RJ40XTNmVVGDQwDQYJKoZIhvcNAQELBQAwQjELMAkGA1UE
         <key>PayloadVersion</key>
         <integer>1</integer>
         <key>PayloadIdentifier</key>
-        <string>com.locketgold.dns.E1A713E3-5387-4466-8869-C90C977F7327</string>
+        <string>com.locketgold.dns.6F897F59-27E3-4FA8-9D3E-1D1133BF4BD8</string>
         <key>PayloadUUID</key>
-        <string>E1A713E3-5387-4466-8869-C90C977F7327</string>
+        <string>6F897F59-27E3-4FA8-9D3E-1D1133BF4BD8</string>
         <key>PayloadDisplayName</key>
-        <string>Locket Gold DNS</string>
+        <string>Locket Gold</string>
         <key>PayloadDescription</key>
-        <string>Kich hoat Locket Gold, video 15s va dang rieng tu</string>
+        <string>Cấu hình Locket Gold</string>
         <key>DNSSettings</key>
         <dict>
             <key>DNSProtocol</key>
@@ -63,11 +63,11 @@ MIIFVDCCAzygAwIBAgIUCu2NDd/O/wPGB3RJ40XTNmVVGDQwDQYJKoZIhvcNAQELBQAwQjELMAkGA1UE
     </dict>
     </array>
     <key>PayloadDisplayName</key>
-    <string>Locket Gold</string>
+    <string>LocketGold Premium</string>
     <key>PayloadDescription</key>
-    <string>Kich hoat locket gold vui long khong xoa. Khi cai dat xong vao Gioi thieu keo xuong cuoi va chon cai dat tin cay chung nhan roi gat nut cong tac cua Locket Gold len.</string>
+    <string>Cài đặt DNS để kích hoạt LocketGold</string>
     <key>PayloadIdentifier</key>
-    <string>com.locketgold.profile.BAA8A7E8-078A-43D3-BF9B-0BD4C7F6A999</string>
+    <string>com.locketgold.profile.00C1F18A-50E5-4F85-ADAA-15DC8436FADC</string>
     <key>PayloadOrganization</key>
     <string>LocketGold</string>
     <key>PayloadRemovalDisallowed</key>
@@ -75,7 +75,7 @@ MIIFVDCCAzygAwIBAgIUCu2NDd/O/wPGB3RJ40XTNmVVGDQwDQYJKoZIhvcNAQELBQAwQjELMAkGA1UE
     <key>PayloadType</key>
     <string>Configuration</string>
     <key>PayloadUUID</key>
-    <string>BAA8A7E8-078A-43D3-BF9B-0BD4C7F6A999</string>
+    <string>00C1F18A-50E5-4F85-ADAA-15DC8436FADC</string>
     <key>PayloadVersion</key>
     <integer>1</integer>
 </dict>

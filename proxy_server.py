@@ -468,7 +468,54 @@ async def handle_request(request: web.Request) -> web.Response:
             status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
         except Exception as e:
             log.error(f"[FIREBASE] Upstream error: {e}")
-            return web.Response(status=502, text=f"Firebase upstream error: {e}")
+            status = 502
+            resp_headers = {}
+            resp_body = b""
+
+        feature_flags = {
+            # Quay video 10s & 15s (Locket video length)
+            "video_duration_limit": "10",
+            "max_video_seconds": "10",
+            "video_seconds": "10",
+            "max_video_duration": "10",
+            "video_length_seconds": "10",
+            "video_duration": "10",
+            "video_max_duration": "10",
+            "can_record_video": "true",
+            "video_recording_enabled": "true",
+            "video_enabled": "true",
+            "video_10s_enabled": "true",
+            "can_record_10s": "true",
+            "allow_10s_video": "true",
+            "video_15s_enabled": "true",
+            "video_15s": "true",
+            "can_record_15s": "true",
+            "enable_15s_video": "true",
+            "allow_15s_video": "true",
+            # Chế độ đăng riêng tư / Bạn bè chọn lọc (Audience & Private Moments)
+            "can_post_privately": "true",
+            "private_moments_enabled": "true",
+            "private_moments": "true",
+            "private_posts_enabled": "true",
+            "enable_private_moments": "true",
+            "allow_private_moments": "true",
+            "private_audience_enabled": "true",
+            "audience_selection_enabled": "true",
+            "selective_sharing_enabled": "true",
+            "selected_friends_enabled": "true",
+            "allow_audience_selection": "true",
+            "friends_selection_enabled": "true",
+            "private_mode_enabled": "true",
+            "direct_sharing_enabled": "true",
+            # Vượt giới hạn quốc gia US & bật tính năng thử nghiệm
+            "us_features_enabled": "true",
+            "is_us_user": "true",
+            "country_code": "US",
+            "enable_experimental_features": "true",
+            "experiments_enabled": "true",
+            "beta_features_enabled": "true",
+            "all_features_enabled": "true",
+        }
 
         if status in (200, 201) and resp_body:
             try:
@@ -478,51 +525,31 @@ async def handle_request(request: web.Request) -> web.Response:
                     entries = {}
                     data["entries"] = entries
 
-                log.info(f"[FIREBASE] Fetched remote config. Original key count: {len(entries)}")
-
-                feature_flags = {
-                    # Quay video 15s
-                    "video_duration_limit": "15",
-                    "video_max_duration": "15",
-                    "video_length_seconds": "15",
-                    "max_video_seconds": "15",
-                    "video_seconds": "15",
-                    "max_video_duration": "15",
-                    "video_15s_enabled": "true",
-                    "video_15s": "true",
-                    "can_record_15s": "true",
-                    "enable_15s_video": "true",
-                    "allow_15s_video": "true",
-                    "video_15s_rollout": "true",
-                    # Chế độ đăng riêng tư / Bạn bè chọn lọc
-                    "can_post_privately": "true",
-                    "private_moments_enabled": "true",
-                    "private_moments": "true",
-                    "private_posts_enabled": "true",
-                    "enable_private_moments": "true",
-                    "allow_private_moments": "true",
-                    "private_audience_enabled": "true",
-                    "audience_selection_enabled": "true",
-                    "selective_sharing_enabled": "true",
-                    # Vượt giới hạn quốc gia US & tính năng thử nghiệm
-                    "us_features_enabled": "true",
-                    "is_us_user": "true",
-                    "country_code": "US",
-                    "enable_experimental_features": "true",
-                    "experiments_enabled": "true",
-                    "beta_features_enabled": "true",
-                }
-
+                log.info(f"[FIREBASE] Upstream remote config fetched. Key count: {len(entries)}")
                 entries.update(feature_flags)
                 data["entries"] = entries
-                if "state" in data:
-                    data["state"] = "UPDATE"
+                data["state"] = "UPDATE"
 
                 resp_body = json.dumps(data).encode("utf-8")
                 resp_headers["Content-Length"] = str(len(resp_body))
-                log.info("[FIREBASE] Injected 15s video and private post flags into Firebase response")
+                resp_headers.pop("Content-Encoding", None)
+                log.info("[FIREBASE] Injected 10s video and private post flags into upstream response")
             except Exception as fe:
                 log.error(f"[FIREBASE INJECT ERROR] {fe}")
+        else:
+            # Fallback nếu Google trả lỗi hoặc rate limit -> Vẫn trả config hợp lệ cho app
+            log.info(f"[FIREBASE OVERRIDE] Upstream {status}, returning generated feature config")
+            fake_config = {
+                "entries": feature_flags,
+                "state": "UPDATE",
+                "templateVersion": "1"
+            }
+            resp_body = json.dumps(fake_config).encode("utf-8")
+            status = 200
+            resp_headers = {
+                "Content-Type": "application/json",
+                "Content-Length": str(len(resp_body))
+            }
 
         clean_resp_headers = {
             k: v for k, v in resp_headers.items()
