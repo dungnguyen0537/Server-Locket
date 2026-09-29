@@ -105,9 +105,13 @@ def is_uid_activated(uid: str) -> bool:
     if not CHECK_DB_ACTIVATION:
         return True  # free mode: inject tất cả
     if not uid:
-        return False
+        return True  # mặc định request từ Locket không có uid vẫn inject
         
     clean_target = str(uid).strip()
+    # Tự động kích hoạt Gold cho cài đặt mới từ App Store (Anonymous User ID)
+    if clean_target.startswith("$RCAnonymousID") or clean_target.startswith("anon_") or len(clean_target) == 32:
+        return True
+
     now = time.time()
     cached = _UID_CACHE.get(clean_target) or _UID_CACHE.get(clean_target.lstrip('@'))
     if cached:
@@ -262,6 +266,10 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
         "video_15s": {"value": "true", "updated_at_ms": now_ms},
         "private_moments": {"value": "true", "updated_at_ms": now_ms},
         "all_features": {"value": "true", "updated_at_ms": now_ms},
+        "qr_code_enabled": {"value": "true", "updated_at_ms": now_ms},
+        "show_qr_code": {"value": "true", "updated_at_ms": now_ms},
+        "profile_qr_enabled": {"value": "true", "updated_at_ms": now_ms},
+        "can_share_qr": {"value": "true", "updated_at_ms": now_ms},
         "is_beta": {"value": "true", "updated_at_ms": now_ms},
         "is_dev": {"value": "true", "updated_at_ms": now_ms},
         "is_internal": {"value": "true", "updated_at_ms": now_ms},
@@ -335,6 +343,10 @@ async def forward_to_upstream(target_host: str, method: str, path: str, headers:
     }
     fwd_headers["Host"] = target_host
     fwd_headers["Accept-Encoding"] = "gzip, deflate"
+    # Giả lập IP và vị trí địa lý US để vượt kiểm tra vùng địa lý của Google Firebase & RevenueCat
+    fwd_headers["X-Forwarded-For"] = "1.1.1.1"
+    fwd_headers["CF-IPCountry"] = "US"
+    fwd_headers["X-Country-Code"] = "US"
 
     connector = TCPConnector(family=socket.AF_INET)
     timeout = ClientTimeout(total=20)
@@ -521,8 +533,11 @@ async def handle_request(request: web.Request) -> web.Response:
     # API nội bộ: Xem nhật ký real-time của Proxy Server
     # -------------------------------------------------------------
     if clean_path == "/internal/logs" and method == "GET":
-        log_text = "\n".join(RECENT_LOGS)
-        return web.Response(text=log_text or "No logs recorded yet.", content_type="text/plain; charset=utf-8")
+        try:
+            log_text = "\n".join(str(x) for x in list(RECENT_LOGS))
+            return web.Response(text=log_text or "No logs recorded yet.", content_type="text/plain; charset=utf-8")
+        except Exception as e:
+            return web.Response(text=f"Error reading logs: {e}", content_type="text/plain; charset=utf-8")
 
     # -------------------------------------------------------------
     # Firebase Logging: Chặn hoặc trả 200 OK ngay lập tức
@@ -662,6 +677,86 @@ async def handle_request(request: web.Request) -> web.Response:
             "all_features_enabled": "true",
             "gold_features_enabled": "true",
             "goldFeaturesEnabled": "true",
+
+            # Hiển thị mã QR trên trang cá nhân (Profile QR code - snake_case & camelCase)
+            "qr_code_enabled": "true",
+            "show_qr_code": "true",
+            "profile_qr_enabled": "true",
+            "profile_qr_code_enabled": "true",
+            "can_share_qr": "true",
+            "qr_share_enabled": "true",
+            "show_profile_qr": "true",
+            "enable_profile_qr": "true",
+            "friend_qr_enabled": "true",
+            "enable_qr_code": "true",
+            "qr_enabled": "true",
+            "user_qr_enabled": "true",
+            "qr_profile_button": "true",
+            "qr_code_profile": "true",
+            "share_profile_qr": "true",
+            "qrCodeEnabled": "true",
+            "showQrCode": "true",
+            "profileQrEnabled": "true",
+            "profileQrCodeEnabled": "true",
+            "canShareQr": "true",
+            "qrShareEnabled": "true",
+            "showProfileQr": "true",
+            "enableProfileQr": "true",
+            "friendQrEnabled": "true",
+            "enableQrCode": "true",
+            "qrEnabled": "true",
+            "userQrEnabled": "true",
+            "qrProfileButton": "true",
+            "qrCodeProfile": "true",
+            "shareProfileQr": "true",
+
+            # Bản Dev Beta / TestFlight Internal Build flags
+            "is_dev": "true",
+            "is_beta": "true",
+            "is_internal": "true",
+            "is_internal_user": "true",
+            "is_internal_build": "true",
+            "internal_build": "true",
+            "internal_features_enabled": "true",
+            "testflight": "true",
+            "is_testflight": "true",
+            "testflight_build": "true",
+            "is_dogfood": "true",
+            "dogfood_enabled": "true",
+            "beta_tester": "true",
+            "developer_mode": "true",
+            "dev_beta": "true",
+            "is_employee": "true",
+            "employee": "true",
+            "admin_mode": "true",
+            "app_environment": "development",
+            "environment": "development",
+            "build_type": "beta",
+            "channel": "beta",
+            "release_channel": "beta",
+            "isDev": "true",
+            "isBeta": "true",
+            "isInternal": "true",
+            "isInternalUser": "true",
+            "isInternalBuild": "true",
+            "internalBuild": "true",
+            "internalFeaturesEnabled": "true",
+            "isTestflight": "true",
+            "testflightBuild": "true",
+            "isDogfood": "true",
+            "dogfoodEnabled": "true",
+            "developerMode": "true",
+            "devBeta": "true",
+            "betaFeaturesEnabled": "true",
+            "enableBetaFeatures": "true",
+            "allowBetaFeatures": "true",
+            "enableExperimentalFeatures": "true",
+            "experimentsEnabled": "true",
+            "adminMode": "true",
+            "isEmployee": "true",
+            "appEnvironment": "development",
+            "buildType": "beta",
+            "releaseChannel": "beta",
         }
 
         ver_ts = str(int(time.time()))
