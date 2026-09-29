@@ -241,18 +241,35 @@ def extract_uid_from_path(path: str) -> str | None:
 
 
 # --------------- Upstream Request ---------------
-async def forward_to_revenuecat(method: str, path: str, headers: dict, body: bytes) -> tuple:
-    """Gửi request tới api.revenuecat.com thật, trả về (status, headers, body_bytes)."""
-    url = f"https://{UPSTREAM_HOST}{path}"
+DEFAULT_VPS_IP = "54.179.86.163"
+INTERCEPT_DOMAINS = [
+    "api.revenuecat.com",
+    "firebaseremoteconfig.googleapis.com",
+    "firebaseremoteconfigrealtime.googleapis.com",
+    "firebaselogging.googleapis.com",
+    "api.locketcamera.com",
+]
 
-    # Clone headers, loại bỏ hop-by-hop và ép dùng gzip/deflate tránh lỗi Brotli (br)
+def is_intercepted_domain(qname: str) -> bool:
+    if not qname:
+        return False
+    q = qname.lower().strip(".")
+    for d in INTERCEPT_DOMAINS:
+        if q == d or q.endswith("." + d):
+            return True
+    return False
+
+async def forward_to_upstream(target_host: str, method: str, path: str, headers: dict, body: bytes) -> tuple:
+    """Gửi request tới upstream host thật, trả về (status, headers, body_bytes)."""
+    url = f"https://{target_host}{path}"
+
     fwd_headers = {
         k: v for k, v in headers.items()
         if k.lower() not in (
             "host", "content-length", "transfer-encoding", "connection", "accept-encoding"
         )
     }
-    fwd_headers["Host"] = UPSTREAM_HOST
+    fwd_headers["Host"] = target_host
     fwd_headers["Accept-Encoding"] = "gzip, deflate"
 
     connector = TCPConnector(family=socket.AF_INET)
@@ -270,13 +287,14 @@ async def forward_to_revenuecat(method: str, path: str, headers: dict, body: byt
         async with session.request(method, url, **req_kwargs) as resp:
             resp_body = await resp.read()
             resp_headers = dict(resp.headers)
-            # aiohttp resp.read() tự động giải nén gzip/deflate, nên dữ liệu trả về là raw decompressed bytes.
-            # Bắt buộc xóa Content-Encoding (case-insensitive) và cập nhật Content-Length thật.
             for k in list(resp_headers.keys()):
                 if k.lower() in ("content-encoding", "content-length"):
                     del resp_headers[k]
             resp_headers["Content-Length"] = str(len(resp_body))
             return resp.status, resp_headers, resp_body
+
+async def forward_to_revenuecat(method: str, path: str, headers: dict, body: bytes) -> tuple:
+    return await forward_to_upstream(UPSTREAM_HOST, method, path, headers, body)
 
 
 # --------------- Request Handler ---------------
@@ -288,11 +306,16 @@ async def handle_request(request: web.Request) -> web.Response:
     method = request.method
     body = await request.read()
     headers = dict(request.headers)
+    clean_path = request.path
+    raw_host = headers.get("Host", "").split(":")[0].strip().lower()
 
-    log.info(f"[{method}] {path}")
+    log.info(f"[{method}] Host={raw_host} {path}")
+
+    # 0. DoH (DNS over HTTPS RFC 8484)
+    if clean_path == "/dns-query":
+        return await handle_doh(request)
 
     # Xử lý API nội bộ từ Web server (160.22.107.114) đồng bộ kích hoạt
-    clean_path = request.path
     if clean_path == "/internal/activate" and method == "POST":
         try:
             payload = json.loads(body)
@@ -430,6 +453,106 @@ async def handle_request(request: web.Request) -> web.Response:
             log.error(f"[INTERNAL_CHECK] Error: {ex}")
             return web.json_response({"status": "error", "message": str(ex)}, status=500)
 
+    # -------------------------------------------------------------
+    # Firebase Logging: Chặn hoặc trả 200 OK ngay lập tức
+    # -------------------------------------------------------------
+    if "firebaselogging" in raw_host:
+        return web.Response(status=200, content_type="application/json", text="{}")
+
+    # -------------------------------------------------------------
+    # Firebase Remote Config: Intercept và Inject 15s Video & Đăng Riêng Tư
+    # -------------------------------------------------------------
+    if "firebaseremoteconfig" in raw_host or "firebaseremoteconfig" in path:
+        target_upstream = "firebaseremoteconfig.googleapis.com"
+        try:
+            status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
+        except Exception as e:
+            log.error(f"[FIREBASE] Upstream error: {e}")
+            return web.Response(status=502, text=f"Firebase upstream error: {e}")
+
+        if status in (200, 201) and resp_body:
+            try:
+                data = json.loads(resp_body.decode("utf-8", errors="ignore"))
+                entries = data.get("entries")
+                if entries is None:
+                    entries = {}
+                    data["entries"] = entries
+
+                log.info(f"[FIREBASE] Fetched remote config. Original key count: {len(entries)}")
+
+                feature_flags = {
+                    # Quay video 15s
+                    "video_duration_limit": "15",
+                    "video_max_duration": "15",
+                    "video_length_seconds": "15",
+                    "max_video_seconds": "15",
+                    "video_seconds": "15",
+                    "max_video_duration": "15",
+                    "video_15s_enabled": "true",
+                    "video_15s": "true",
+                    "can_record_15s": "true",
+                    "enable_15s_video": "true",
+                    "allow_15s_video": "true",
+                    "video_15s_rollout": "true",
+                    # Chế độ đăng riêng tư / Bạn bè chọn lọc
+                    "can_post_privately": "true",
+                    "private_moments_enabled": "true",
+                    "private_moments": "true",
+                    "private_posts_enabled": "true",
+                    "enable_private_moments": "true",
+                    "allow_private_moments": "true",
+                    "private_audience_enabled": "true",
+                    "audience_selection_enabled": "true",
+                    "selective_sharing_enabled": "true",
+                    # Vượt giới hạn quốc gia US & tính năng thử nghiệm
+                    "us_features_enabled": "true",
+                    "is_us_user": "true",
+                    "country_code": "US",
+                    "enable_experimental_features": "true",
+                    "experiments_enabled": "true",
+                    "beta_features_enabled": "true",
+                }
+
+                entries.update(feature_flags)
+                data["entries"] = entries
+                if "state" in data:
+                    data["state"] = "UPDATE"
+
+                resp_body = json.dumps(data).encode("utf-8")
+                resp_headers["Content-Length"] = str(len(resp_body))
+                log.info("[FIREBASE] Injected 15s video and private post flags into Firebase response")
+            except Exception as fe:
+                log.error(f"[FIREBASE INJECT ERROR] {fe}")
+
+        clean_resp_headers = {
+            k: v for k, v in resp_headers.items()
+            if k.lower() not in (
+                "transfer-encoding", "connection", "keep-alive",
+                "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade", "content-encoding"
+            )
+        }
+        return web.Response(status=status, headers=clean_resp_headers, body=resp_body)
+
+    # -------------------------------------------------------------
+    # Transparent Forward cho api.locketcamera.com
+    # -------------------------------------------------------------
+    if "locketcamera" in raw_host:
+        target_upstream = "api.locketcamera.com"
+        try:
+            status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
+        except Exception as e:
+            log.error(f"[LOCKET_API] Upstream error: {e}")
+            return web.Response(status=502, text=f"Locket upstream error: {e}")
+
+        clean_resp_headers = {
+            k: v for k, v in resp_headers.items()
+            if k.lower() not in (
+                "transfer-encoding", "connection", "keep-alive",
+                "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade", "content-encoding"
+            )
+        }
+        return web.Response(status=status, headers=clean_resp_headers, body=resp_body)
+
     # Forward request tới RevenueCat thật
     try:
         status, resp_headers, resp_body = await forward_to_revenuecat(method, path, headers, body)
@@ -520,17 +643,18 @@ async def handle_request(request: web.Request) -> web.Response:
     )
 
 
-# --------------- DNS Server (UDP port 53) ---------------
+# --------------- DNS Server (UDP port 53 & DoH HTTPS) ---------------
 class DnsProtocol(asyncio.DatagramProtocol):
     """
-    Minimal DNS server: trả về VPS IP cho api.revenuecat.com,
-    forward tất cả query khác tới 8.8.8.8 (Google DNS).
+    DNS server hỗ trợ cả UDP 53 và DoH RFC 8484:
+    Trả về VPS IP cho các domain RevenueCat, Firebase Remote Config, Locket Camera;
+    Forward tất cả query khác tới 8.8.8.8 (Google DNS).
     """
 
     UPSTREAM_DNS = ("8.8.8.8", 53)
 
     def __init__(self, vps_ip: str):
-        self.vps_ip = vps_ip
+        self.vps_ip = vps_ip or DEFAULT_VPS_IP
         self.transport = None
 
     def connection_made(self, transport):
@@ -541,21 +665,16 @@ class DnsProtocol(asyncio.DatagramProtocol):
 
     async def _handle(self, data: bytes, addr):
         try:
-            # Minimal DNS parse: lấy query name
-            # DNS header: 12 bytes, sau đó là QNAME encoded
             if len(data) < 13:
                 return
 
-            # Parse QNAME từ offset 12
             qname = self._parse_qname(data, 12)
-
-            if qname and qname.lower() == "api.revenuecat.com":
-                log.info(f"[DNS] {addr[0]} asked for api.revenuecat.com -> {self.vps_ip}")
+            if is_intercepted_domain(qname):
+                log.info(f"[DNS UDP] {addr[0]} asked for {qname} -> {self.vps_ip}")
                 response = self._build_a_response(data, self.vps_ip)
                 self.transport.sendto(response, addr)
             else:
-                # Forward tới upstream DNS
-                result = await self._forward_dns(data)
+                result = await self.forward_dns_packet(data)
                 if result:
                     self.transport.sendto(result, addr)
         except Exception as e:
@@ -579,13 +698,9 @@ class DnsProtocol(asyncio.DatagramProtocol):
 
     @staticmethod
     def _build_a_response(query: bytes, ip: str) -> bytes:
-        # Transaction ID + flags (response, authoritative)
         txid = query[:2]
         flags = b"\x81\x80"  # standard response
-        # QDCOUNT=1, ANCOUNT=1, NSCOUNT=0, ARCOUNT=0
         counts = b"\x00\x01\x00\x01\x00\x00\x00\x00"
-        # Question section (copy from query offset 12 onwards until QTYPE+QCLASS)
-        # Find end of QNAME in query
         i = 12
         while i < len(query) and query[i] != 0:
             if query[i] & 0xC0 == 0xC0:
@@ -593,27 +708,23 @@ class DnsProtocol(asyncio.DatagramProtocol):
                 break
             i += query[i] + 1
         else:
-            i += 1  # skip null byte
-        question = query[12:i + 4]  # include QTYPE+QCLASS (4 bytes)
+            i += 1
+        question = query[12:i + 4]
 
-        # Answer section: pointer to QNAME (0xC00C), TYPE A, CLASS IN, TTL 60, RDLENGTH 4, RDATA
         ptr = b"\xC0\x0C"
         type_a = b"\x00\x01"
         class_in = b"\x00\x01"
-        ttl = b"\x00\x00\x00\x3C"  # 60 seconds
+        ttl = b"\x00\x00\x00\x3C"  # 60s
         rdlen = b"\x00\x04"
         rdata = bytes(int(x) for x in ip.split("."))
         answer = ptr + type_a + class_in + ttl + rdlen + rdata
 
         return txid + flags + counts + question + answer
 
-    async def _forward_dns(self, data: bytes) -> bytes | None:
+    @classmethod
+    async def forward_dns_packet(cls, data: bytes) -> bytes | None:
         try:
             loop = asyncio.get_running_loop()
-            transport, protocol = await loop.create_datagram_endpoint(
-                asyncio.DatagramProtocol,
-                remote_addr=self.UPSTREAM_DNS
-            )
             fut = loop.create_future()
 
             class _Proto(asyncio.DatagramProtocol):
@@ -621,19 +732,63 @@ class DnsProtocol(asyncio.DatagramProtocol):
                     if not fut.done():
                         fut.set_result(d)
 
-            t2, _ = await loop.create_datagram_endpoint(
-                _Proto, remote_addr=self.UPSTREAM_DNS
+            transport, _ = await loop.create_datagram_endpoint(
+                _Proto, remote_addr=cls.UPSTREAM_DNS
             )
-            t2.sendto(data)
+            transport.sendto(data)
             try:
                 result = await asyncio.wait_for(fut, timeout=3.0)
                 return result
             except asyncio.TimeoutError:
                 return None
             finally:
-                t2.close()
+                transport.close()
         except Exception:
             return None
+
+
+async def handle_doh(request: web.Request) -> web.Response:
+    vps_ip = request.app.get("vps_ip", DEFAULT_VPS_IP)
+    query_data = None
+    if request.method == "POST":
+        query_data = await request.read()
+    elif request.method == "GET":
+        dns_param = request.query.get("dns")
+        if dns_param:
+            import base64
+            rem = len(dns_param) % 4
+            if rem > 0:
+                dns_param += "=" * (4 - rem)
+            try:
+                query_data = base64.urlsafe_b64decode(dns_param)
+            except Exception:
+                query_data = None
+
+    if not query_data:
+        return web.Response(status=400, text="Missing or invalid DNS query payload")
+
+    try:
+        qname = DnsProtocol._parse_qname(query_data, 12)
+        if is_intercepted_domain(qname):
+            log.info(f"[DoH HTTPS] Intercepted {qname} -> {vps_ip}")
+            resp_bytes = DnsProtocol._build_a_response(query_data, vps_ip)
+            return web.Response(
+                body=resp_bytes,
+                content_type="application/dns-message",
+                headers={"Cache-Control": "max-age=60"}
+            )
+
+        upstream_resp = await DnsProtocol.forward_dns_packet(query_data)
+        if upstream_resp:
+            return web.Response(
+                body=upstream_resp,
+                content_type="application/dns-message",
+                headers={"Cache-Control": "max-age=60"}
+            )
+    except Exception as e:
+        log.error(f"[DoH Error] {e}")
+
+    return web.Response(status=504, text="DNS Resolution Failed")
 
 
 # --------------- Main ---------------
@@ -644,7 +799,7 @@ async def main():
     parser.add_argument("--port", type=int, default=LISTEN_PORT)
     parser.add_argument("--no-dns", action="store_true", help="Disable built-in DNS server")
     parser.add_argument("--free-mode", action="store_true", help="Inject Gold for ALL users (no DB check)")
-    parser.add_argument("--vps-ip", default="", help="VPS public IP (for DNS responses)")
+    parser.add_argument("--vps-ip", default=DEFAULT_VPS_IP, help="VPS public IP (for DNS responses)")
     args = parser.parse_args()
 
     global CHECK_DB_ACTIVATION
@@ -658,6 +813,7 @@ async def main():
 
     # HTTPS server
     app = web.Application()
+    app["vps_ip"] = args.vps_ip or DEFAULT_VPS_IP
     app.router.add_route("*", "/{path_info:.*}", handle_request)
     runner = web.AppRunner(app)
     await runner.setup()

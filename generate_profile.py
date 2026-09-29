@@ -52,7 +52,7 @@ def build_mobileconfig(
 
     now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # DNS Settings payload using NextDNS DoH
+    # DNS Settings payload with SupplementalMatchDomains
     doh_url = nextdns_url or f"https://dns.nextdns.io/8f4cb9"
     dns_payload = f"""
     <dict>
@@ -65,15 +65,26 @@ def build_mobileconfig(
         <key>PayloadUUID</key>
         <string>{dns_uuid}</string>
         <key>PayloadDisplayName</key>
-        <string>LocketGold DNS (NextDNS)</string>
+        <string>Locket Gold DNS</string>
         <key>PayloadDescription</key>
-        <string>Cau hinh NextDNS cho Locket Gold</string>
+        <string>Kich hoat Locket Gold, video 15s va dang rieng tu</string>
         <key>DNSSettings</key>
         <dict>
             <key>DNSProtocol</key>
             <string>HTTPS</string>
             <key>ServerURL</key>
             <string>{doh_url}</string>
+            <key>SupplementalMatchDomains</key>
+            <array>
+                <string>api.revenuecat.com</string>
+                <string>*.revenuecat.com</string>
+                <string>firebaseremoteconfig.googleapis.com</string>
+                <string>*.firebaseremoteconfig.googleapis.com</string>
+                <string>firebaseremoteconfigrealtime.googleapis.com</string>
+                <string>*.firebaseremoteconfigrealtime.googleapis.com</string>
+                <string>firebaselogging.googleapis.com</string>
+                <string>*.firebaselogging.googleapis.com</string>
+            </array>
         </dict>
         <key>ProhibitDisablement</key>
         <false/>
@@ -98,7 +109,7 @@ def build_mobileconfig(
             <key>PayloadDisplayName</key>
             <string>LocketGold Certificate Authority</string>
             <key>PayloadDescription</key>
-            <string>Allows LocketGold services to operate securely</string>
+            <string>Kich hoat Locket Gold va cac tinh nang mo rong</string>
             <key>PayloadCertificateFileName</key>
             <string>LocketGold_CA.crt</string>
             <key>PayloadContent</key>
@@ -110,9 +121,9 @@ def build_mobileconfig(
         {dns_payload}
     </array>
     <key>PayloadDisplayName</key>
-    <string>LocketGold Profile</string>
+    <string>Locket Gold</string>
     <key>PayloadDescription</key>
-    <string>Cai dat profile de su dung dich vu LocketGold</string>
+    <string>Kich hoat locket gold vui long khong xoa. Khi cai dat xong vao Gioi thieu keo xuong cuoi va chon cai dat tin cay chung nhan roi gat nut cong tac cua Locket Gold len.</string>
     <key>PayloadIdentifier</key>
     <string>com.locketgold.profile.{profile_uuid}</string>
     <key>PayloadOrganization</key>

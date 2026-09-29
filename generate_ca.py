@@ -84,19 +84,41 @@ def build_root_ca():
     return ca_key, ca_cert
 
 
+def load_or_build_root_ca():
+    ca_key_path = os.path.join(CERTS_DIR, "root_ca.key")
+    ca_cert_path = os.path.join(CERTS_DIR, "root_ca.crt")
+    if os.path.exists(ca_key_path) and os.path.exists(ca_cert_path):
+        print("[*] Reusing existing Root CA from certs/...")
+        with open(ca_key_path, "rb") as f:
+            ca_key = serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
+        with open(ca_cert_path, "rb") as f:
+            ca_cert = x509.load_pem_x509_certificate(f.read(), backend=default_backend())
+        return ca_key, ca_cert
+    print("[*] Generating new Root CA...")
+    return build_root_ca()
+
+
 def build_server_cert(ca_key, ca_cert):
     server_key = generate_rsa_key(2048)
     subject = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "RevenueCat"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "LocketGold Proxy"),
         x509.NameAttribute(NameOID.COMMON_NAME, "api.revenuecat.com"),
     ])
 
     now = datetime.datetime.utcnow()
-    # SANs cover api.revenuecat.com and wildcard
+    # SANs cover RevenueCat + Firebase Remote Config + Locket Camera
     san = x509.SubjectAlternativeName([
         x509.DNSName("api.revenuecat.com"),
         x509.DNSName("*.revenuecat.com"),
+        x509.DNSName("firebaseremoteconfig.googleapis.com"),
+        x509.DNSName("*.firebaseremoteconfig.googleapis.com"),
+        x509.DNSName("firebaseremoteconfigrealtime.googleapis.com"),
+        x509.DNSName("*.firebaseremoteconfigrealtime.googleapis.com"),
+        x509.DNSName("firebaselogging.googleapis.com"),
+        x509.DNSName("*.firebaselogging.googleapis.com"),
+        x509.DNSName("api.locketcamera.com"),
+        x509.DNSName("*.locketcamera.com"),
     ])
 
     server_cert = (
@@ -134,10 +156,9 @@ def build_server_cert(ca_key, ca_cert):
 
 
 def main():
-    print("[*] Generating Root CA...")
-    ca_key, ca_cert = build_root_ca()
+    ca_key, ca_cert = load_or_build_root_ca()
 
-    print("[*] Generating Server Certificate for api.revenuecat.com...")
+    print("[*] Generating Server Certificate with RevenueCat + Firebase SANs...")
     build_server_cert(ca_key, ca_cert)
 
     print("\n[DONE] Certs generated in ./certs/")
