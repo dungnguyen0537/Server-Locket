@@ -53,7 +53,7 @@ log = logging.getLogger("proxy")
 
 # --------------- In-Memory Cache (High Performance) ---------------
 _UID_CACHE: dict[str, tuple[bool, str, str, float]] = {}  # uid -> (is_active, pur_date, exp_date, timestamp)
-CACHE_TTL = 300  # 5 phút
+CACHE_TTL = 30  # 30 giây: phản ứng cực nhanh với thay đổi
 
 # --------------- DB Helper ---------------
 def init_db():
@@ -96,8 +96,13 @@ def is_uid_activated(uid: str) -> bool:
     clean_target = str(uid).strip()
     now = time.time()
     cached = _UID_CACHE.get(clean_target) or _UID_CACHE.get(clean_target.lstrip('@'))
-    if cached and (now - cached[3] < CACHE_TTL):
-        return cached[0]
+    if cached:
+        # Nếu đang có Gold (True): dùng cache trong CACHE_TTL (30s)
+        if cached[0] and (now - cached[3] < CACHE_TTL):
+            return True
+        # Nếu chưa có Gold (False): chỉ cache trong 2s để khi nâng lại ăn Gold ngay tức thì
+        elif not cached[0] and (now - cached[3] < 2):
+            return False
 
     if not os.path.exists(MAIN_DB_PATH):
         return False
@@ -107,8 +112,8 @@ def is_uid_activated(uid: str) -> bool:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT created_at, expires_at FROM upgrades 
-            WHERE (locket_uid = ? OR locket_username = ? OR locket_username = ?) AND status = 'success' 
+            SELECT created_at, expires_at, status FROM upgrades 
+            WHERE (locket_uid = ? OR locket_username = ? OR locket_username = ?)
             ORDER BY created_at DESC LIMIT 1
             """,
             (clean_target, clean_target, clean_target.lstrip('@'))
@@ -116,7 +121,7 @@ def is_uid_activated(uid: str) -> bool:
         row = cur.fetchone()
         conn.close()
         
-        if row:
+        if row and row[2] == 'success':
             pur = str(row[0]) if row[0] else datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
             exp = str(row[1]) if row[1] else FAKE_EXPIRES_DATE
             _UID_CACHE[clean_target] = (True, pur, exp, now)
@@ -124,6 +129,7 @@ def is_uid_activated(uid: str) -> bool:
             return True
         else:
             _UID_CACHE[clean_target] = (False, "", "", now)
+            _UID_CACHE[clean_target.lstrip('@')] = (False, "", "", now)
             return False
     except Exception as e:
         log.warning(f"DB check error for {uid}: {e}")
@@ -346,6 +352,56 @@ async def handle_request(request: web.Request) -> web.Response:
             return web.json_response({"status": "success", "message": "Synced to proxy", "order_id": order_id})
         except Exception as ex:
             log.error(f"[INTERNAL_ACTIVATE] Error: {ex}")
+            return web.json_response({"status": "error", "message": str(ex)}, status=500)
+
+    # -------------------------------------------------------------
+    # API nội bộ: Nhận lệnh hủy kích hoạt từ Telegram Bot hoặc Web Server
+    # -------------------------------------------------------------
+    if path == "/internal/deactivate" and method == "POST":
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+            u_id = str(data.get("uid", "")).strip()
+            username = str(data.get("username", "")).strip()
+            target = u_id or username
+            if not target:
+                return web.json_response({"status": "error", "message": "Missing uid or username"}, status=400)
+
+            # 1. Truy vấn DB để tìm tất cả UID và Username liên quan
+            conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT locket_uid, locket_username FROM upgrades
+                WHERE (locket_uid = ? OR locket_username = ? OR locket_username = ?)
+            """, (u_id, username, username.lstrip('@')))
+            rows = cur.fetchall()
+
+            # 2. Xóa và áp đặt negative cache ngay tức thì cho mọi alias
+            now = time.time()
+            all_keys = {u_id, username, username.lstrip('@'), target, target.lstrip('@')}
+            for r_uid, r_user in rows:
+                if r_uid:
+                    all_keys.add(r_uid.strip())
+                if r_user:
+                    all_keys.add(r_user.strip())
+                    all_keys.add(r_user.strip().lstrip('@'))
+
+            for k in all_keys:
+                if k:
+                    _UID_CACHE[k] = (False, "", "", now)
+
+            # 3. Cập nhật trạng thái trong SQLite
+            cur.execute("""
+                UPDATE upgrades SET status='deactivated'
+                WHERE (locket_uid = ? OR locket_username = ? OR locket_username = ?)
+            """, (u_id, username, username.lstrip('@')))
+            affected = cur.rowcount
+            conn.commit()
+            conn.close()
+
+            log.info(f"[INTERNAL_DEACTIVATE] Deactivated target={target} (affected={affected}, purged_keys={len(all_keys)})")
+            return web.json_response({"status": "success", "message": f"Deactivated {target}", "affected": affected})
+        except Exception as ex:
+            log.error(f"[INTERNAL_DEACTIVATE] Error: {ex}")
             return web.json_response({"status": "error", "message": str(ex)}, status=500)
 
     # Forward request tới RevenueCat thật

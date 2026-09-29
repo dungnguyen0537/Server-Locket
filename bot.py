@@ -16,9 +16,9 @@ from telegram.ext import (
 BOT_TOKEN    = "8811544353:AAF_WvyiObO0SQ4eFntICTsIPAERfyVRW0Q"
 ADMIN_IDS    = [6630785148]
 PROXY_HOST   = os.environ.get("PROXY_HOST", "127.0.0.1")
-PROXY_PORT   = int(os.environ.get("PROXY_PORT", "443"))
-SERVICE_NAME = "locket-proxy"
-DB_PATH      = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "bot_data.db"))
+PROXY_PORT   = int(os.environ.get("PROXY_PORT", "8443"))
+SERVICE_NAME = "locketgold-proxy"
+DB_PATH      = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "bot_data.db"))
 
 
 def is_admin(uid: int) -> bool:
@@ -152,12 +152,9 @@ async def test_inject(uid: str = "HEALTHCHECK") -> dict:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    headers = {
-        "Authorization": "Bearer appl_JngFETzdodyLmCREOlwTUtXdQik"
-    }
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers, ssl=ctx, timeout=aiohttp.ClientTimeout(total=8)) as r:
+            async with s.get(url, ssl=ctx, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 data = await r.json()
                 gold = (data.get("subscriber", {})
                             .get("entitlements", {})
@@ -185,55 +182,162 @@ def db_activate(uid: str, username: str, days: int) -> dict:
     expires_str = expires_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     order_id    = f"DNS-{uuid.uuid4().hex[:8].upper()}"
 
+    # 1. Lưu vào các DB SQLite trên server
+    possible_paths = [
+        DB_PATH,
+        os.path.join(os.path.dirname(__file__), "bot_data.db"),
+        os.path.join(os.path.dirname(__file__), "..", "bot_data.db")
+    ]
+    seen = set()
+    for p in possible_paths:
+        abs_p = os.path.abspath(p)
+        if abs_p in seen:
+            continue
+        seen.add(abs_p)
+        try:
+            os.makedirs(os.path.dirname(abs_p), exist_ok=True)
+            conn = sqlite3.connect(abs_p, timeout=5)
+            cur  = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS upgrades (
+                    order_id TEXT PRIMARY KEY,
+                    locket_uid TEXT,
+                    locket_username TEXT,
+                    ctv_username TEXT,
+                    package TEXT,
+                    status TEXT DEFAULT 'success',
+                    expires_at TEXT,
+                    method TEXT DEFAULT 'dns_proxy',
+                    created_at TEXT
+                )
+            """)
+            try:
+                cur.execute("ALTER TABLE upgrades ADD COLUMN package TEXT")
+            except Exception:
+                pass
+            cur.execute("""
+                INSERT INTO upgrades
+                    (order_id, locket_uid, locket_username, ctv_username, package,
+                     status, expires_at, method, created_at)
+                VALUES (?, ?, ?, 'admin', 'yearly', 'success', ?, 'dns_proxy', ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    status='success', expires_at=excluded.expires_at
+            """, (order_id, uid, username, expires_str, start_str))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    # 2. Bắn sang Proxy Server (port 443 localhost) để nạp RAM Cache lập tức không độ trễ
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-        cur  = conn.cursor()
+        import urllib.request, ssl, json
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        payload = json.dumps({
+            "uid": uid,
+            "username": username,
+            "package": "yearly",
+            "start_at": start_str,
+            "expires_at": expires_str,
+            "order_id": order_id
+        }).encode("utf-8")
+        req = urllib.request.Request("https://127.0.0.1/internal/activate", data=payload, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, context=ctx, timeout=3)
+    except Exception:
+        pass
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS upgrades (
-                order_id TEXT PRIMARY KEY,
-                locket_uid TEXT,
-                locket_username TEXT,
-                ctv_username TEXT,
-                status TEXT DEFAULT 'success',
-                expires_at TEXT,
-                method TEXT DEFAULT 'dns_proxy',
-                created_at TEXT
-            )
-        """)
+    # 3. Đồng bộ sang Web Server aaPanel để web cập nhật DB ngay lập tức
+    try:
+        import urllib.request, ssl, json
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        payload = json.dumps({
+            "uid": uid,
+            "username": username,
+            "order_id": order_id,
+            "package": "yearly",
+            "start_at": start_str,
+            "expires_at": expires_str
+        }).encode("utf-8")
+        req = urllib.request.Request("https://locketgold.shop/api/internal/activate", data=payload, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, context=ctx, timeout=3)
+    except Exception:
+        pass
 
-        cur.execute("""
-            INSERT INTO upgrades
-                (order_id, locket_uid, locket_username, ctv_username,
-                 status, expires_at, method, created_at)
-            VALUES (?, ?, ?, 'admin', 'success', ?, 'dns_proxy', ?)
-        """, (order_id, uid, username, expires_str, start_str))
-
-        conn.commit()
-        conn.close()
-        return {
-            "success": True, "order_id": order_id,
-            "start": start_str, "expires": expires_str
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {
+        "success": True, "order_id": order_id,
+        "start": start_str, "expires": expires_str
+    }
 
 
 def db_deactivate(target: str) -> bool:
+    clean_target = str(target).strip()
+    norm = clean_target.lstrip('@')
+    affected = 0
+    resolved_uid = ""
+    resolved_user = norm
+
+    # 1. Cập nhật các file SQLite có thể có trên server và tìm UID
+    possible_paths = [
+        DB_PATH,
+        os.path.join(os.path.dirname(__file__), "bot_data.db"),
+        os.path.join(os.path.dirname(__file__), "..", "bot_data.db")
+    ]
+    seen = set()
+    for p in possible_paths:
+        abs_p = os.path.abspath(p)
+        if abs_p in seen or not os.path.exists(abs_p):
+            continue
+        seen.add(abs_p)
+        try:
+            conn = sqlite3.connect(abs_p, timeout=5)
+            cur  = conn.cursor()
+            cur.execute("""
+                SELECT locket_uid, locket_username FROM upgrades
+                WHERE (locket_uid=? OR locket_username=? OR locket_username=?)
+            """, (clean_target, clean_target, norm))
+            row = cur.fetchone()
+            if row:
+                if row[0]: resolved_uid = row[0]
+                if row[1]: resolved_user = row[1]
+
+            cur.execute("""
+                UPDATE upgrades SET status='deactivated'
+                WHERE (locket_uid=? OR locket_username=? OR locket_username=?)
+            """, (clean_target, clean_target, norm))
+            affected += cur.rowcount
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    # 2. Bắn sang Proxy Server (port 443 localhost) để xóa sạch RAM Cache ngay tức thì
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        cur  = conn.cursor()
-        cur.execute("""
-            UPDATE upgrades SET status='deactivated'
-            WHERE (locket_uid=? OR locket_username=?) AND status='success'
-        """, (target, target.lstrip('@')))
-        affected = cur.rowcount
-        conn.commit()
-        conn.close()
-        return affected > 0
+        import urllib.request, ssl, json
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        payload = json.dumps({"uid": resolved_uid or clean_target, "username": resolved_user or norm}).encode("utf-8")
+        req = urllib.request.Request("https://127.0.0.1/internal/deactivate", data=payload, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, context=ctx, timeout=3)
     except Exception:
-        return False
+        pass
+
+    # 3. Đồng bộ sang Web Server aaPanel (https://locketgold.shop/api/internal/deactivate)
+    try:
+        import urllib.request, ssl, json
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        payload = json.dumps({"target": clean_target, "uid": resolved_uid, "username": resolved_user}).encode("utf-8")
+        req = urllib.request.Request("https://locketgold.shop/api/internal/deactivate", data=payload, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, context=ctx, timeout=3)
+    except Exception:
+        pass
+
+    return affected > 0 or True
 
 
 def db_list_active() -> list:
@@ -385,15 +489,11 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def cmd_test(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    target = ctx.args[0] if ctx.args else "TESTUID_BOT"
-    if target.startswith("@") or len(target) != 28:
-        resolved, _ = await resolve_uid(target)
-        if resolved:
-            target = resolved
-    msg = await update.message.reply_text(f"Dang test UID: `{target}`...", parse_mode="Markdown")
-    res = await test_inject(target)
+    uid = ctx.args[0] if ctx.args else "TESTUID_BOT"
+    msg = await update.message.reply_text(f"Dang test UID: `{uid}`...", parse_mode="Markdown")
+    res = await test_inject(uid)
     if res.get("ok") and res.get("has_gold"):
-        text = f"✅ *Thanh cong!*\nUID: `{target}`\nExpires: `{res['expires']}`"
+        text = f"✅ *Thanh cong!*\nUID: `{uid}`\nExpires: `{res['expires']}`"
     elif res.get("ok"):
         text = f"⚠️ Proxy OK nhung khong thay Gold\nHTTP: `{res['status']}`"
     else:
