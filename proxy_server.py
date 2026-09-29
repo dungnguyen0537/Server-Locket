@@ -188,14 +188,18 @@ FAKE_SUBSCRIPTION = {
 def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     """Sửa response subscriber để inject Gold entitlement với ngày nâng thật."""
     pur_date, exp_date = get_uid_dates(uid)
+    now_ms = int(time.time() * 1000)
 
     data["Attention"] = "Locket Gold By DungNguyen05"
+
+    # Sản phẩm Gold chính thức hiện tại của Locket (StoreKit 2)
+    primary_prod = "locket_1600_1y"
 
     ent = FAKE_ENTITLEMENT.copy()
     ent["purchase_date"] = pur_date
     ent["original_purchase_date"] = pur_date
     ent["expires_date"] = exp_date
-    ent["product_identifier"] = "com.locket02.premium.yearly"
+    ent["product_identifier"] = primary_prod
 
     sub_entry = FAKE_SUBSCRIPTION.copy()
     sub_entry["purchase_date"] = pur_date
@@ -204,16 +208,51 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
 
     subscriber = data.setdefault("subscriber", {})
 
-    # Inject entitlements
+    # 1. Inject TẤT CẢ các entitlement keys mà Locket có thể kiểm tra
     entitlements = subscriber.setdefault("entitlements", {})
-    entitlements["Gold"] = ent
-    entitlements["gold"] = ent
+    all_ent_keys = [
+        "Gold", "gold", "Pro", "pro", "Premium", "premium", 
+        "all_features", "locket_gold", "Plus", "plus",
+        "extended_video", "video_10s", "private_moments", "can_post_privately"
+    ]
+    for key in all_ent_keys:
+        entitlements[key] = ent
 
-    # Inject subscription products
+    # 2. Inject TẤT CẢ các product identifiers mà các phiên bản Locket kiểm tra
     subscriptions = subscriber.setdefault("subscriptions", {})
-    subscriptions["com.locket02.premium.yearly"] = sub_entry
-    subscriptions["com.locket.Locket.gold.annual"] = sub_entry
-    subscriptions["com.locket.Locket.gold.annual:com.locket.Locket.gold.annual.base"] = sub_entry
+    all_prod_ids = [
+        "locket_1600_1y",
+        "locket_3600_1y",
+        "com.locket.Locket.gold.annual",
+        "com.locket.Locket.gold.lifetime",
+        "com.locket.Locket.gold.monthly",
+        "com.locket02.premium.yearly",
+        "com.locket02.premium.monthly",
+        "com.locket.gold",
+        "locket_gold_yearly",
+        "locket_gold_monthly",
+        "com.locket.Locket.gold.annual:com.locket.Locket.gold.annual.base",
+        "com.locket.Locket.gold.lifetime:com.locket.Locket.gold.lifetime.base",
+    ]
+    for pid in all_prod_ids:
+        subscriptions[pid] = sub_entry
+
+    # 3. Subscriber Attributes (Vượt rào cản quốc gia US để kích hoạt 10s Video & Bạn bè riêng tư)
+    subscriber["subscriber_attributes"] = {
+        "$country": {"value": "US", "updated_at_ms": now_ms},
+        "$locale": {"value": "en_US", "updated_at_ms": now_ms},
+        "country": {"value": "US", "updated_at_ms": now_ms},
+        "can_post_privately": {"value": "true", "updated_at_ms": now_ms},
+        "video_duration_limit": {"value": "10", "updated_at_ms": now_ms},
+        "video_10s": {"value": "true", "updated_at_ms": now_ms},
+        "video_15s": {"value": "true", "updated_at_ms": now_ms},
+        "private_moments": {"value": "true", "updated_at_ms": now_ms},
+        "all_features": {"value": "true", "updated_at_ms": now_ms},
+    }
+
+    # 4. Đảm bảo cấu trúc subscriber đầy đủ chuẩn RevenueCat
+    subscriber.setdefault("non_subscriptions", {})
+    subscriber.setdefault("other_purchases", {})
 
     log.info(f"[INJECT] Gold injected for uid={uid}, purchase={pur_date}, expires={exp_date}")
     return data
@@ -266,7 +305,8 @@ async def forward_to_upstream(target_host: str, method: str, path: str, headers:
     fwd_headers = {
         k: v for k, v in headers.items()
         if k.lower() not in (
-            "host", "content-length", "transfer-encoding", "connection", "accept-encoding"
+            "host", "content-length", "transfer-encoding", "connection", "accept-encoding",
+            "if-none-match", "if-modified-since", "x-revenuecat-etag"
         )
     }
     fwd_headers["Host"] = target_host
@@ -288,7 +328,7 @@ async def forward_to_upstream(target_host: str, method: str, path: str, headers:
             resp_body = await resp.read()
             resp_headers = dict(resp.headers)
             for k in list(resp_headers.keys()):
-                if k.lower() in ("content-encoding", "content-length"):
+                if k.lower() in ("content-encoding", "content-length", "etag", "x-revenuecat-etag", "last-modified"):
                     del resp_headers[k]
             resp_headers["Content-Length"] = str(len(resp_body))
             return resp.status, resp_headers, resp_body
@@ -430,7 +470,7 @@ async def handle_request(request: web.Request) -> web.Response:
     # -------------------------------------------------------------
     # API nội bộ: Tra cứu trạng thái Gold thời gian thực từ VPS Proxy cho Web
     # -------------------------------------------------------------
-    if path == "/internal/check" and method in ("GET", "POST"):
+    if clean_path == "/internal/check" and method in ("GET", "POST"):
         try:
             target = request.query.get("target", "").strip()
             if not target and body:
@@ -460,7 +500,26 @@ async def handle_request(request: web.Request) -> web.Response:
         return web.Response(status=200, content_type="application/json", text="{}")
 
     # -------------------------------------------------------------
-    # Firebase Remote Config: Intercept và Inject 15s Video & Đăng Riêng Tư
+    # Firebase Remote Config Realtime: Forward đúng upstream realtime
+    # -------------------------------------------------------------
+    if "firebaseremoteconfigrealtime" in raw_host:
+        target_upstream = "firebaseremoteconfigrealtime.googleapis.com"
+        try:
+            status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
+            clean_resp_headers = {
+                k: v for k, v in resp_headers.items()
+                if k.lower() not in (
+                    "transfer-encoding", "connection", "keep-alive",
+                    "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade", "content-encoding"
+                )
+            }
+            return web.Response(status=status, headers=clean_resp_headers, body=resp_body)
+        except Exception as e:
+            log.error(f"[FIREBASE_REALTIME] Upstream error: {e}")
+            return web.Response(status=200, content_type="application/json", text="{}")
+
+    # -------------------------------------------------------------
+    # Firebase Remote Config: Intercept và Inject 10s Video & Đăng Riêng Tư
     # -------------------------------------------------------------
     if "firebaseremoteconfig" in raw_host or "firebaseremoteconfig" in path:
         target_upstream = "firebaseremoteconfig.googleapis.com"
@@ -473,7 +532,7 @@ async def handle_request(request: web.Request) -> web.Response:
             resp_body = b""
 
         feature_flags = {
-            # Quay video 10s & 15s (Locket video length)
+            # Quay video 10s & 15s (Locket video length - snake_case & camelCase)
             "video_duration_limit": "10",
             "max_video_seconds": "10",
             "video_seconds": "10",
@@ -481,17 +540,48 @@ async def handle_request(request: web.Request) -> web.Response:
             "video_length_seconds": "10",
             "video_duration": "10",
             "video_max_duration": "10",
+            "video_length": "10",
+            "max_video_length": "10",
             "can_record_video": "true",
             "video_recording_enabled": "true",
             "video_enabled": "true",
             "video_10s_enabled": "true",
             "can_record_10s": "true",
             "allow_10s_video": "true",
+            "video_10s": "true",
             "video_15s_enabled": "true",
             "video_15s": "true",
             "can_record_15s": "true",
             "enable_15s_video": "true",
             "allow_15s_video": "true",
+            "extended_video": "true",
+            "extended_video_enabled": "true",
+            "gold_video_duration": "10",
+            
+            # camelCase equivalents
+            "videoDurationLimit": "10",
+            "maxVideoDuration": "10",
+            "maxVideoSeconds": "10",
+            "videoSeconds": "10",
+            "videoLengthSeconds": "10",
+            "videoDuration": "10",
+            "videoMaxDuration": "10",
+            "canRecordVideo": "true",
+            "videoRecordingEnabled": "true",
+            "videoEnabled": "true",
+            "video10sEnabled": "true",
+            "canRecord10s": "true",
+            "allow10sVideo": "true",
+            "video10s": "true",
+            "video15sEnabled": "true",
+            "video15s": "true",
+            "canRecord15s": "true",
+            "enable15sVideo": "true",
+            "allow15sVideo": "true",
+            "extendedVideo": "true",
+            "extendedVideoEnabled": "true",
+            "goldVideoDuration": "10",
+
             # Chế độ đăng riêng tư / Bạn bè chọn lọc (Audience & Private Moments)
             "can_post_privately": "true",
             "private_moments_enabled": "true",
@@ -507,16 +597,43 @@ async def handle_request(request: web.Request) -> web.Response:
             "friends_selection_enabled": "true",
             "private_mode_enabled": "true",
             "direct_sharing_enabled": "true",
+            "post_audience_selection": "true",
+            "send_to_specific_friends": "true",
+
+            # camelCase equivalents
+            "canPostPrivately": "true",
+            "privateMomentsEnabled": "true",
+            "privateMoments": "true",
+            "privatePostsEnabled": "true",
+            "enablePrivateMoments": "true",
+            "allowPrivateMoments": "true",
+            "privateAudienceEnabled": "true",
+            "audienceSelectionEnabled": "true",
+            "selectiveSharingEnabled": "true",
+            "selectedFriendsEnabled": "true",
+            "allowAudienceSelection": "true",
+            "friendsSelectionEnabled": "true",
+            "privateModeEnabled": "true",
+            "directSharingEnabled": "true",
+            "postAudienceSelection": "true",
+            "sendToSpecificFriends": "true",
+
             # Vượt giới hạn quốc gia US & bật tính năng thử nghiệm
             "us_features_enabled": "true",
             "is_us_user": "true",
             "country_code": "US",
+            "country": "US",
+            "isUSUser": "true",
+            "countryCode": "US",
             "enable_experimental_features": "true",
             "experiments_enabled": "true",
             "beta_features_enabled": "true",
             "all_features_enabled": "true",
+            "gold_features_enabled": "true",
+            "goldFeaturesEnabled": "true",
         }
 
+        ver_ts = str(int(time.time()))
         if status in (200, 201) and resp_body:
             try:
                 data = json.loads(resp_body.decode("utf-8", errors="ignore"))
@@ -529,6 +646,7 @@ async def handle_request(request: web.Request) -> web.Response:
                 entries.update(feature_flags)
                 data["entries"] = entries
                 data["state"] = "UPDATE"
+                data["templateVersion"] = ver_ts
 
                 resp_body = json.dumps(data).encode("utf-8")
                 resp_headers["Content-Length"] = str(len(resp_body))
@@ -537,12 +655,12 @@ async def handle_request(request: web.Request) -> web.Response:
             except Exception as fe:
                 log.error(f"[FIREBASE INJECT ERROR] {fe}")
         else:
-            # Fallback nếu Google trả lỗi hoặc rate limit -> Vẫn trả config hợp lệ cho app
+            # Fallback nếu Google trả lỗi, rate limit hoặc 304 -> Vẫn trả config hợp lệ cho app
             log.info(f"[FIREBASE OVERRIDE] Upstream {status}, returning generated feature config")
             fake_config = {
                 "entries": feature_flags,
                 "state": "UPDATE",
-                "templateVersion": "1"
+                "templateVersion": ver_ts
             }
             resp_body = json.dumps(fake_config).encode("utf-8")
             status = 200
