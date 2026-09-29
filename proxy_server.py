@@ -540,29 +540,27 @@ async def handle_request(request: web.Request) -> web.Response:
             return web.Response(text=f"Error reading logs: {e}", content_type="text/plain; charset=utf-8")
 
     # -------------------------------------------------------------
-    # Firebase Logging: Chặn hoặc trả 200 OK ngay lập tức
+    # API nội bộ: Kiểm tra phiên bản proxy đang chạy trên VPS
+    # -------------------------------------------------------------
+    if clean_path == "/internal/version" and method == "GET":
+        return web.json_response({
+            "version": "2.2.0",
+            "features": "qr_code, 10s_video, private_post, anonymous_auto_gold",
+            "time": datetime.datetime.utcnow().isoformat()
+        })
+
+    # -------------------------------------------------------------
+    # Firebase Logging: Chặn 200 OK ngay lập tức (giống competitor)
     # -------------------------------------------------------------
     if "firebaselogging" in raw_host:
         return web.Response(status=200, content_type="application/json", text="{}")
 
     # -------------------------------------------------------------
-    # Firebase Remote Config Realtime: Forward đúng upstream realtime
+    # Firebase Remote Config Realtime: Chặn hoàn toàn HTTP 404 (giống competitor dns.nodns.vn)
+    # Ngăn chặn Google Realtime SSE stream push đè config gốc làm mất 10s video, đăng riêng tư và QR
     # -------------------------------------------------------------
     if "firebaseremoteconfigrealtime" in raw_host:
-        target_upstream = "firebaseremoteconfigrealtime.googleapis.com"
-        try:
-            status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
-            clean_resp_headers = {
-                k: v for k, v in resp_headers.items()
-                if k.lower() not in (
-                    "transfer-encoding", "connection", "keep-alive",
-                    "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade", "content-encoding"
-                )
-            }
-            return web.Response(status=status, headers=clean_resp_headers, body=resp_body)
-        except Exception as e:
-            log.error(f"[FIREBASE_REALTIME] Upstream error: {e}")
-            return web.Response(status=200, content_type="application/json", text="{}")
+        return web.Response(status=404, text="Not found")
 
     # -------------------------------------------------------------
     # Firebase Remote Config: Intercept và Inject 10s Video & Đăng Riêng Tư
