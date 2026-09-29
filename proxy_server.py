@@ -42,6 +42,17 @@ FAKE_ORIGINAL_PUR_DATE  = "2024-01-01T00:00:00Z"
 # Kiem tra quyen theo database (chi UID duoc admin bat tren Bot moi len Gold)
 CHECK_DB_ACTIVATION = True
 
+from collections import deque
+RECENT_LOGS = deque(maxlen=200)
+
+class BufferHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            RECENT_LOGS.append(msg)
+        except Exception:
+            pass
+
 # --------------- Logging ---------------
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +60,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger("proxy")
+_buf_handler = BufferHandler()
+_buf_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+log.addHandler(_buf_handler)
 
 
 # --------------- In-Memory Cache (High Performance) ---------------
@@ -237,7 +251,7 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     for pid in all_prod_ids:
         subscriptions[pid] = sub_entry
 
-    # 3. Subscriber Attributes (Vượt rào cản quốc gia US để kích hoạt 10s Video & Bạn bè riêng tư)
+    # 3. Subscriber Attributes (Vượt rào cản quốc gia US & bật chế độ Dev Beta)
     subscriber["subscriber_attributes"] = {
         "$country": {"value": "US", "updated_at_ms": now_ms},
         "$locale": {"value": "en_US", "updated_at_ms": now_ms},
@@ -248,9 +262,19 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
         "video_15s": {"value": "true", "updated_at_ms": now_ms},
         "private_moments": {"value": "true", "updated_at_ms": now_ms},
         "all_features": {"value": "true", "updated_at_ms": now_ms},
+        "is_beta": {"value": "true", "updated_at_ms": now_ms},
+        "is_dev": {"value": "true", "updated_at_ms": now_ms},
+        "is_internal": {"value": "true", "updated_at_ms": now_ms},
+        "developer_mode": {"value": "true", "updated_at_ms": now_ms},
+        "dev_beta": {"value": "true", "updated_at_ms": now_ms},
+        "testflight": {"value": "true", "updated_at_ms": now_ms},
+        "beta_tester": {"value": "true", "updated_at_ms": now_ms},
     }
 
-    # 4. Đảm bảo cấu trúc subscriber đầy đủ chuẩn RevenueCat
+    # 4. Đảm bảo cấu trúc subscriber đầy đủ chuẩn Apple StoreKit / RevenueCat
+    subscriber["management_url"] = "https://apps.apple.com/account/subscriptions"
+    subscriber["original_purchase_date"] = pur_date
+    subscriber["original_application_version"] = "2006"
     subscriber.setdefault("non_subscriptions", {})
     subscriber.setdefault("other_purchases", {})
 
@@ -492,6 +516,13 @@ async def handle_request(request: web.Request) -> web.Response:
         except Exception as ex:
             log.error(f"[INTERNAL_CHECK] Error: {ex}")
             return web.json_response({"status": "error", "message": str(ex)}, status=500)
+
+    # -------------------------------------------------------------
+    # API nội bộ: Xem nhật ký real-time của Proxy Server
+    # -------------------------------------------------------------
+    if clean_path == "/internal/logs" and method == "GET":
+        log_text = "\n".join(RECENT_LOGS)
+        return web.Response(text=log_text or "No logs recorded yet.", content_type="text/plain; charset=utf-8")
 
     # -------------------------------------------------------------
     # Firebase Logging: Chặn hoặc trả 200 OK ngay lập tức
