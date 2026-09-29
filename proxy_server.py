@@ -49,56 +49,67 @@ logging.basicConfig(
 log = logging.getLogger("proxy")
 
 
+# --------------- In-Memory Cache (High Performance) ---------------
+_UID_CACHE: dict[str, tuple[bool, str, str, float]] = {}  # uid -> (is_active, pur_date, exp_date, timestamp)
+CACHE_TTL = 300  # 5 phút
+
 # --------------- DB Helper ---------------
 def is_uid_activated(uid: str) -> bool:
-    """Kiểm tra xem uid có Gold đang active trong DB hệ thống không."""
+    """Kiểm tra xem uid có Gold đang active trong DB hệ thống không (hỗ trợ Memory Cache)."""
     if not CHECK_DB_ACTIVATION:
         return True  # free mode: inject tất cả
-    if not uid or not os.path.exists(MAIN_DB_PATH):
+    if not uid:
         return False
-    try:
-        conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
-        cur = conn.cursor()
-        # Tìm trong bảng upgrades: locket_uid = uid và status = 'success'
-        cur.execute(
-            "SELECT 1 FROM upgrades WHERE locket_uid = ? AND status = 'success' LIMIT 1",
-            (uid,)
-        )
-        row = cur.fetchone()
-        conn.close()
-        return row is not None
-    except Exception as e:
-        log.warning(f"DB check error for {uid}: {e}")
-        return False
-
-
-def get_uid_dates(uid: str) -> tuple[str, str]:
-    """Lấy ngày kích hoạt (purchase_date) và ngày hết hạn (expires_at) từ DB."""
-    pur_date = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    exp_date = FAKE_EXPIRES_DATE
+        
+    now = time.time()
+    cached = _UID_CACHE.get(uid)
+    if cached and (now - cached[3] < CACHE_TTL):
+        return cached[0]
 
     if not os.path.exists(MAIN_DB_PATH):
-        return pur_date, exp_date
+        return False
+
     try:
         conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT created_at, expires_at FROM upgrades
-            WHERE locket_uid = ? AND status = 'success'
+            SELECT created_at, expires_at FROM upgrades 
+            WHERE locket_uid = ? AND status = 'success' 
             ORDER BY created_at DESC LIMIT 1
             """,
             (uid,)
         )
         row = cur.fetchone()
         conn.close()
+        
         if row:
-            if row[0]:
-                pur_date = str(row[0])
-            if row[1]:
-                exp_date = str(row[1])
+            pur = str(row[0]) if row[0] else datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            exp = str(row[1]) if row[1] else FAKE_EXPIRES_DATE
+            _UID_CACHE[uid] = (True, pur, exp, now)
+            return True
+        else:
+            _UID_CACHE[uid] = (False, "", "", now)
+            return False
     except Exception as e:
-        log.warning(f"DB date error for {uid}: {e}")
+        log.warning(f"DB check error for {uid}: {e}")
+        return False
+
+
+def get_uid_dates(uid: str) -> tuple[str, str]:
+    """Lấy ngày kích hoạt (purchase_date) và ngày hết hạn (expires_at) từ Cache hoặc DB."""
+    cached = _UID_CACHE.get(uid)
+    if cached and cached[0]:
+        return cached[1], cached[2]
+
+    # Nếu chưa có trong cache thì gọi is_uid_activated để nạp
+    is_uid_activated(uid)
+    cached = _UID_CACHE.get(uid)
+    if cached and cached[0]:
+        return cached[1], cached[2]
+
+    pur_date = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    exp_date = FAKE_EXPIRES_DATE
     return pur_date, exp_date
 
 
@@ -264,6 +275,8 @@ async def handle_request(request: web.Request) -> web.Response:
             """, (order_id, u_id, username, package, expires_at, created_at))
             conn.commit()
             conn.close()
+            # Cập nhật ngay vào RAM Cache để người dùng mở app ăn Gold lập tức không độ trễ
+            _UID_CACHE[u_id] = (True, created_at, expires_at, time.time())
             log.info(f"[INTERNAL_ACTIVATE] Synced uid={u_id} (@{username}) pkg={package} exp={expires_at}")
             return web.json_response({"status": "success", "message": "Synced to proxy", "order_id": order_id})
         except Exception as ex:
