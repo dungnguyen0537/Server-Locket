@@ -404,6 +404,32 @@ async def handle_request(request: web.Request) -> web.Response:
             log.error(f"[INTERNAL_DEACTIVATE] Error: {ex}")
             return web.json_response({"status": "error", "message": str(ex)}, status=500)
 
+    # -------------------------------------------------------------
+    # API nội bộ: Tra cứu trạng thái Gold thời gian thực từ VPS Proxy cho Web
+    # -------------------------------------------------------------
+    if path == "/internal/check" and method in ("GET", "POST"):
+        try:
+            target = request.query.get("target", "").strip()
+            if not target and body:
+                try:
+                    data = json.loads(body.decode("utf-8"))
+                    target = str(data.get("target") or data.get("uid") or data.get("username") or "").strip()
+                except Exception:
+                    pass
+            clean_target = str(target).strip()
+            is_active = is_uid_activated(clean_target)
+            pur, exp = get_uid_dates(clean_target) if is_active else ("", "")
+            return web.json_response({
+                "status": "success",
+                "target": clean_target,
+                "is_gold": is_active,
+                "expires_at": exp,
+                "start_at": pur
+            })
+        except Exception as ex:
+            log.error(f"[INTERNAL_CHECK] Error: {ex}")
+            return web.json_response({"status": "error", "message": str(ex)}, status=500)
+
     # Forward request tới RevenueCat thật
     try:
         status, resp_headers, resp_body = await forward_to_revenuecat(method, path, headers, body)
