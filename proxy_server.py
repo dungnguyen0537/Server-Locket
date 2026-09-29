@@ -234,6 +234,42 @@ async def handle_request(request: web.Request) -> web.Response:
 
     log.info(f"[{method}] {path}")
 
+    # Xử lý API nội bộ từ Web server (160.22.107.114) đồng bộ kích hoạt
+    clean_path = request.path
+    if clean_path == "/internal/activate" and method == "POST":
+        try:
+            payload = json.loads(body)
+            u_id = payload.get("uid")
+            username = payload.get("username", "")
+            package = payload.get("package", "yearly")
+            expires_at = payload.get("expires_at")
+            created_at = payload.get("created_at") or datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            order_id = payload.get("order_id") or f"WEB-{uuid.uuid4().hex[:8].upper()}"
+
+            if not u_id or not expires_at:
+                return web.json_response({"status": "error", "message": "Missing uid or expires_at"}, status=400)
+
+            conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO upgrades (order_id, locket_uid, locket_username, ctv_username, package, status, expires_at, method, created_at)
+                VALUES (?, ?, ?, 'web_api', ?, 'success', ?, 'dns_proxy', ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    locket_uid=excluded.locket_uid,
+                    locket_username=excluded.locket_username,
+                    package=excluded.package,
+                    status='success',
+                    expires_at=excluded.expires_at,
+                    created_at=excluded.created_at
+            """, (order_id, u_id, username, package, expires_at, created_at))
+            conn.commit()
+            conn.close()
+            log.info(f"[INTERNAL_ACTIVATE] Synced uid={u_id} (@{username}) pkg={package} exp={expires_at}")
+            return web.json_response({"status": "success", "message": "Synced to proxy", "order_id": order_id})
+        except Exception as ex:
+            log.error(f"[INTERNAL_ACTIVATE] Error: {ex}")
+            return web.json_response({"status": "error", "message": str(ex)}, status=500)
+
     # Forward request tới RevenueCat thật
     try:
         status, resp_headers, resp_body = await forward_to_revenuecat(method, path, headers, body)
