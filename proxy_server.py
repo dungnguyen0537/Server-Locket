@@ -535,9 +535,9 @@ async def handle_request(request: web.Request) -> web.Response:
     if clean_path == "/internal/logs" and method == "GET":
         try:
             log_text = "\n".join(str(x) for x in list(RECENT_LOGS))
-            return web.Response(text=log_text or "No logs recorded yet.", content_type="text/plain; charset=utf-8")
+            return web.Response(text=log_text or "No logs recorded yet.", content_type="text/plain", charset="utf-8")
         except Exception as e:
-            return web.Response(text=f"Error reading logs: {e}", content_type="text/plain; charset=utf-8")
+            return web.Response(text=f"Error reading logs: {e}", content_type="text/plain", charset="utf-8")
 
     # -------------------------------------------------------------
     # API nội bộ: Kiểm tra phiên bản proxy đang chạy trên VPS
