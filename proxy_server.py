@@ -39,8 +39,8 @@ FAKE_EXPIRES_DATE       = "2099-12-31T23:59:59Z"
 FAKE_PURCHASE_DATE      = "2024-01-01T00:00:00Z"
 FAKE_ORIGINAL_PUR_DATE  = "2024-01-01T00:00:00Z"
 
-# Kiem tra quyen theo database (False = tu dong kich hoat cho tat ca thiet bi qua DNS giong competitor)
-CHECK_DB_ACTIVATION = False
+# Kiem tra quyen theo database (chi UID duoc admin bat tren Bot moi len Gold)
+CHECK_DB_ACTIVATION = True
 
 from collections import deque
 RECENT_LOGS = deque(maxlen=200)
@@ -204,61 +204,65 @@ FAKE_SUBSCRIPTION = {
 }
 
 def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
-    """Sửa response subscriber để inject Gold entitlement chuẩn App Store TestFlight (Build 32)."""
+    """Sửa response subscriber để inject Gold entitlement chuẩn locket_gold_annual của đối thủ."""
     pur_date, exp_date = get_uid_dates(uid)
     if not exp_date or exp_date == FAKE_EXPIRES_DATE:
-        exp_date = (datetime.datetime.utcnow() + datetime.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        exp_date = "2099-12-31T23:59:59Z"
+
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    now_ms = int(time.time() * 1000)
+
+    data["request_date"] = now_iso
+    data["request_date_ms"] = now_ms
 
     subscriber = data.setdefault("subscriber", {})
 
-    # 1. Entitlements: Chỉ duy nhất 'Gold' với product_identifier='locket_1600_1y'
+    # Khớp chính xác 100% cấu trúc của đối thủ dns.nodns.vn
+    subscriber["aliases"] = [uid]
+    subscriber["app_user_id"] = uid
+    subscriber["original_app_user_id"] = uid
+    subscriber["first_seen"] = "2020-01-01T00:00:00Z"
+    subscriber["last_seen"] = now_iso
+    subscriber["original_purchase_date"] = "2020-01-01T00:00:00Z"
+    subscriber["original_application_version"] = None
+    subscriber["management_url"] = None
+    subscriber["subscriber_attributes"] = {}
+    subscriber["non_subscriptions"] = {}
+    subscriber["other_purchases"] = {}
+
+    # Entitlement: product_identifier bắt buộc là 'locket_gold_annual'
     subscriber["entitlements"] = {
         "Gold": {
             "expires_date": exp_date,
             "grace_period_expires_date": None,
-            "product_identifier": "locket_1600_1y",
-            "purchase_date": "2026-02-14T02:48:27Z"
+            "product_identifier": "locket_gold_annual",
+            "purchase_date": "2020-01-01T00:00:00Z"
         }
     }
 
-    # 2. Subscriptions: Chuẩn biên lai App Store của bản Locket Gold gốc
+    # Subscriptions: 'locket_gold_annual' là mã SKU gốc mở Hiện mã QR, Quay video 10s & Đăng riêng tư
     subscriber["subscriptions"] = {
-        "locket_1600_1y": {
+        "locket_gold_annual": {
             "auto_resume_date": None,
             "billing_issues_detected_at": None,
-            "display_name": "locket_1600_1y",
             "expires_date": exp_date,
             "grace_period_expires_date": None,
             "is_sandbox": False,
-            "management_url": "https://apps.apple.com/account/subscriptions",
-            "original_purchase_date": "2026-02-14T02:48:27Z",
+            "original_purchase_date": "2020-01-01T00:00:00Z",
             "ownership_type": "PURCHASED",
-            "period_type": "intro",
-            "price": {
-                "amount": 299000.0,
-                "currency": "VND"
-            },
-            "purchase_date": "2026-02-14T02:48:27Z",
+            "period_type": "normal",
+            "product_plan_identifier": None,
+            "purchase_date": "2020-01-01T00:00:00Z",
             "refunded_at": None,
             "store": "app_store",
-            "store_transaction_id": "520002661802592",
             "unsubscribe_detected_at": None
         }
     }
 
-    # 3. Thông tin cốt lõi: TestFlight Build 32 từ 2022 -> Mở Hiện Mã QR, Quay video 10s & Đăng riêng tư
-    subscriber["original_app_user_id"] = uid
-    subscriber["original_application_version"] = "32"
-    subscriber["original_purchase_date"] = "2022-02-13T10:49:37Z"
-    subscriber["first_seen"] = "2022-02-13T10:49:37Z"
-    subscriber["management_url"] = "https://apps.apple.com/account/subscriptions"
-    subscriber.setdefault("non_subscriptions", {})
-    subscriber.setdefault("other_purchases", {})
-
-    # Không để trường lạ gây lỗi bộ giải mã Decodable của Locket iOS
+    # Bỏ các header/trường lạ không chuẩn
     data.pop("Attention", None)
 
-    log.info(f"[INJECT] Gold (TestFlight Build 32) injected for uid={uid}, expires={exp_date}")
+    log.info(f"[INJECT] Gold (locket_gold_annual) injected for uid={uid}, expires={exp_date}")
     return data
 
 
@@ -516,8 +520,8 @@ async def handle_request(request: web.Request) -> web.Response:
     # -------------------------------------------------------------
     if clean_path == "/internal/version" and method == "GET":
         return web.json_response({
-            "version": "2.3.0",
-            "features": "testflight_build32, auto_gold_all, clean_firebase_forward, qr_code, 10s_video, private_post",
+            "version": "2.4.0",
+            "features": "locket_gold_annual, check_db_true, exact_competitor_match, qr_code, 10s_video, private_post",
             "time": datetime.datetime.utcnow().isoformat()
         })
 
@@ -625,24 +629,8 @@ async def handle_request(request: web.Request) -> web.Response:
     elif should_inject:
         # RevenueCat trả lỗi nhưng ta vẫn cần trả fake Gold
         # Tạo fake subscriber response hoàn toàn
-        log.info(f"[INJECT OVERRIDE] Upstream {status}, generating fake response for {uid}")
-        fake = {
-            "request_date": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "request_date_ms": int(datetime.datetime.utcnow().timestamp() * 1000),
-            "subscriber": {
-                "entitlements": {},
-                "first_seen": FAKE_PURCHASE_DATE,
-                "last_seen": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "management_url": None,
-                "non_subscriptions": {},
-                "original_app_user_id": uid,
-                "original_application_version": "5.41.0",
-                "original_purchase_date": FAKE_ORIGINAL_PUR_DATE,
-                "other_purchases": {},
-                "subscriptions": {}
-            }
-        }
-        fake = inject_gold_into_subscriber(fake, uid)
+        log.info(f"[INJECT OVERRIDE] Upstream {status}, generating clean fake response for {uid}")
+        fake = inject_gold_into_subscriber({}, uid)
         resp_body = json.dumps(fake).encode("utf-8")
         status = 200
         resp_headers = {
