@@ -56,6 +56,36 @@ _UID_CACHE: dict[str, tuple[bool, str, str, float]] = {}  # uid -> (is_active, p
 CACHE_TTL = 300  # 5 phút
 
 # --------------- DB Helper ---------------
+def init_db():
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(MAIN_DB_PATH)), exist_ok=True)
+        conn = sqlite3.connect(MAIN_DB_PATH, timeout=10)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS upgrades (
+                order_id TEXT PRIMARY KEY,
+                locket_uid TEXT,
+                locket_username TEXT,
+                ctv_username TEXT,
+                package TEXT,
+                status TEXT DEFAULT 'success',
+                expires_at TEXT,
+                method TEXT DEFAULT 'dns_proxy',
+                created_at TEXT
+            )
+        """)
+        # Đảm bảo cột package tồn tại nếu DB cũ chưa có
+        try:
+            cur.execute("ALTER TABLE upgrades ADD COLUMN package TEXT")
+        except Exception:
+            pass
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"init_db error: {e}")
+
+init_db()
+
 def is_uid_activated(uid: str) -> bool:
     """Kiểm tra xem uid có Gold đang active trong DB hệ thống không (hỗ trợ Memory Cache)."""
     if not CHECK_DB_ACTIVATION:
@@ -262,23 +292,45 @@ async def handle_request(request: web.Request) -> web.Response:
             if not u_id or not expires_at:
                 return web.json_response({"status": "error", "message": "Missing uid or expires_at"}, status=400)
 
-            conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO upgrades (order_id, locket_uid, locket_username, ctv_username, package, status, expires_at, method, created_at)
-                VALUES (?, ?, ?, 'web_api', ?, 'success', ?, 'dns_proxy', ?)
-                ON CONFLICT(order_id) DO UPDATE SET
-                    locket_uid=excluded.locket_uid,
-                    locket_username=excluded.locket_username,
-                    package=excluded.package,
-                    status='success',
-                    expires_at=excluded.expires_at,
-                    created_at=excluded.created_at
-            """, (order_id, u_id, username, package, expires_at, created_at))
-            conn.commit()
-            conn.close()
             # Cập nhật ngay vào RAM Cache để người dùng mở app ăn Gold lập tức không độ trễ
             _UID_CACHE[u_id] = (True, created_at, expires_at, time.time())
+
+            try:
+                conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+                cur = conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS upgrades (
+                        order_id TEXT PRIMARY KEY,
+                        locket_uid TEXT,
+                        locket_username TEXT,
+                        ctv_username TEXT,
+                        package TEXT,
+                        status TEXT DEFAULT 'success',
+                        expires_at TEXT,
+                        method TEXT DEFAULT 'dns_proxy',
+                        created_at TEXT
+                    )
+                """)
+                try:
+                    cur.execute("ALTER TABLE upgrades ADD COLUMN package TEXT")
+                except Exception:
+                    pass
+                cur.execute("""
+                    INSERT INTO upgrades (order_id, locket_uid, locket_username, ctv_username, package, status, expires_at, method, created_at)
+                    VALUES (?, ?, ?, 'web_api', ?, 'success', ?, 'dns_proxy', ?)
+                    ON CONFLICT(order_id) DO UPDATE SET
+                        locket_uid=excluded.locket_uid,
+                        locket_username=excluded.locket_username,
+                        package=excluded.package,
+                        status='success',
+                        expires_at=excluded.expires_at,
+                        created_at=excluded.created_at
+                """, (order_id, u_id, username, package, expires_at, created_at))
+                conn.commit()
+                conn.close()
+            except Exception as db_err:
+                log.warning(f"[INTERNAL_ACTIVATE] DB persist warning: {db_err}")
+
             log.info(f"[INTERNAL_ACTIVATE] Synced uid={u_id} (@{username}) pkg={package} exp={expires_at}")
             return web.json_response({"status": "success", "message": "Synced to proxy", "order_id": order_id})
         except Exception as ex:
