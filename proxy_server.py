@@ -600,95 +600,18 @@ async def handle_request(request: web.Request) -> web.Response:
         return web.Response(status=404, text="Not found")
 
     # -------------------------------------------------------------
-    # Firebase Remote Config: Intercept và Inject Quay video 15s, Hiện mã QR & Đăng riêng tư
+    # Firebase Remote Config: Forward sạch (bản NextDNS cũ)
     # -------------------------------------------------------------
     if "firebaseremoteconfig" in raw_host or "firebaseremoteconfig" in path:
         target_upstream = "firebaseremoteconfig.googleapis.com"
         try:
             status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
-            log.info(f"[FIREBASE] Upstream status={status}, size={len(resp_body)} bytes")
+            log.info(f"[FIREBASE] Forwarded to Google, status={status}, size={len(resp_body)} bytes")
         except Exception as e:
             log.error(f"[FIREBASE] Upstream error: {e}")
             status = 502
             resp_headers = {}
             resp_body = b""
-
-        if status == 200 and resp_body:
-            try:
-                decompressed = resp_body
-                if resp_body.startswith(b'\x1f\x8b'):
-                    import gzip
-                    decompressed = gzip.decompress(resp_body)
-                elif resp_body.startswith(b'x\x9c') or resp_body.startswith(b'x\x01'):
-                    import zlib
-                    decompressed = zlib.decompress(resp_body)
-
-                data = json.loads(decompressed.decode("utf-8"))
-                entries = data.setdefault("entries", {})
-
-                # Ghi lại toàn bộ key gốc của Locket vào file để tra cứu chính xác
-                try:
-                    with open(os.path.join(os.path.dirname(__file__), "last_firebase_entries.json"), "w", encoding="utf-8") as f:
-                        json.dump(entries, f, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
-
-                # Duyệt qua các key gốc để tìm và nâng cấp giá trị
-                modified_count = 0
-                for k in list(entries.keys()):
-                    kl = k.lower()
-                    # 1. Thời lượng video: chuyển từ 3s/5s/10s -> 15s
-                    if "video" in kl and any(term in kl for term in ["duration", "length", "max", "limit", "sec"]):
-                        entries[k] = "15"
-                        modified_count += 1
-                    # 2. Đăng riêng tư / bạn bè chọn lọc
-                    elif any(term in kl for term in ["private", "moment", "audience", "friend_select"]):
-                        if str(entries[k]).lower() in ["false", "0", "disabled"]:
-                            entries[k] = "true"
-                            modified_count += 1
-                    # 3. Mã QR
-                    elif "qr" in kl:
-                        entries[k] = "true"
-                        modified_count += 1
-                    # 4. Dev / Beta / Testflight
-                    elif any(term in kl for term in ["testflight", "beta", "is_dev", "developer"]):
-                        entries[k] = "true"
-                        modified_count += 1
-
-                # Đồng thời tiêm các flag chuẩn nếu chưa có trong entries
-                feature_flags = {
-                    "video_duration_limit": "15",
-                    "video_duration": "15",
-                    "max_video_seconds": "15",
-                    "max_video_duration": "15",
-                    "video_length": "15",
-                    "extended_video_enabled": "true",
-                    "video_15s_enabled": "true",
-                    "video_15s": "true",
-                    "can_record_15s": "true",
-                    "can_post_privately": "true",
-                    "private_moments_enabled": "true",
-                    "private_moments": "true",
-                    "audience_selection_enabled": "true",
-                    "allow_audience_selection": "true",
-                    "qr_code_enabled": "true",
-                    "show_qr_code": "true",
-                    "profile_qr_enabled": "true",
-                    "is_beta": "true",
-                    "developer_mode": "true",
-                    "testflight": "true"
-                }
-                entries.update(feature_flags)
-
-                # Giữ nguyên state hoặc set UPDATE
-                data["state"] = "UPDATE"
-                resp_body = json.dumps(data).encode("utf-8")
-                resp_headers["Content-Length"] = str(len(resp_body))
-                resp_headers["Content-Type"] = "application/json"
-                resp_headers.pop("Content-Encoding", None)
-                log.info(f"[FIREBASE] Injected into Google config (modified={modified_count}, total={len(entries)})")
-            except Exception as fe:
-                log.error(f"[FIREBASE INJECT ERROR] {fe}")
 
         clean_resp_headers = {
             k: v for k, v in resp_headers.items()
