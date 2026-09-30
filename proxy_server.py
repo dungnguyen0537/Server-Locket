@@ -226,59 +226,74 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     subscriber["first_seen"] = pur_date
     subscriber["last_seen"] = now_iso
     subscriber["original_purchase_date"] = pur_date
-    subscriber["original_application_version"] = "1.0"  # Chữ ký TestFlight Dev Beta gốc
-    subscriber["management_url"] = None
-    subscriber["subscriber_attributes"] = {
-        "$country": {"value": "US", "updated_at_ms": now_ms},
-        "$locale": {"value": "en_US", "updated_at_ms": now_ms},
-        "country": {"value": "US", "updated_at_ms": now_ms},
-        "is_beta": {"value": "true", "updated_at_ms": now_ms},
-        "testflight": {"value": "true", "updated_at_ms": now_ms},
-        "dev_beta": {"value": "true", "updated_at_ms": now_ms},
-        "developer_mode": {"value": "true", "updated_at_ms": now_ms},
-        "can_post_privately": {"value": "true", "updated_at_ms": now_ms},
-        "video_duration_limit": {"value": "15", "updated_at_ms": now_ms},
-        "video_15s": {"value": "true", "updated_at_ms": now_ms},
-        "show_qr_code": {"value": "true", "updated_at_ms": now_ms},
-        "qr_code_enabled": {"value": "true", "updated_at_ms": now_ms}
-    }
+    subscriber["original_application_version"] = "4"
+    subscriber["management_url"] = "https://apps.apple.com/account/subscriptions"
+    subscriber["subscriber_attributes"] = {}
     subscriber["non_subscriptions"] = {}
     subscriber["other_purchases"] = {}
 
-    # Entitlement: product_identifier 'locket_gold_annual' kèm is_sandbox=True để Locket nhận diện TestFlight
+    # Entitlement: product_identifier chuẩn locket_1600_1y (SKU App Store VN mở 10s video, QR, đăng riêng tư)
     subscriber["entitlements"] = {
         "Gold": {
             "expires_date": exp_date,
             "grace_period_expires_date": None,
-            "product_identifier": "locket_gold_annual",
-            "purchase_date": pur_date,
-            "is_sandbox": True
+            "product_identifier": "locket_1600_1y",
+            "purchase_date": pur_date
         }
     }
 
-    # Subscriptions: 'locket_gold_annual' kèm is_sandbox=True mở Hiện mã QR, Quay video 15s & Đăng riêng tư
+    # Subscriptions: Có CẢ locket_1600_1y VÀ locket_gold_annual với StoreKit Transaction ID và Price chuẩn
+    sub_payload_1600 = {
+        "auto_resume_date": None,
+        "billing_issues_detected_at": None,
+        "display_name": "locket_1600_1y",
+        "expires_date": exp_date,
+        "grace_period_expires_date": None,
+        "is_sandbox": False,
+        "original_purchase_date": pur_date,
+        "ownership_type": "PURCHASED",
+        "period_type": "normal",
+        "price": {
+            "amount": 399000,
+            "currency": "VND"
+        },
+        "purchase_date": pur_date,
+        "refunded_at": None,
+        "store": "app_store",
+        "store_transaction_id": "490003094202846",
+        "unsubscribe_detected_at": None
+    }
+
+    sub_payload_annual = {
+        "auto_resume_date": None,
+        "billing_issues_detected_at": None,
+        "display_name": "locket_gold_annual",
+        "expires_date": exp_date,
+        "grace_period_expires_date": None,
+        "is_sandbox": False,
+        "original_purchase_date": pur_date,
+        "ownership_type": "PURCHASED",
+        "period_type": "normal",
+        "price": {
+            "amount": 399000,
+            "currency": "VND"
+        },
+        "purchase_date": pur_date,
+        "refunded_at": None,
+        "store": "app_store",
+        "store_transaction_id": "490003094202846",
+        "unsubscribe_detected_at": None
+    }
+
     subscriber["subscriptions"] = {
-        "locket_gold_annual": {
-            "auto_resume_date": None,
-            "billing_issues_detected_at": None,
-            "expires_date": exp_date,
-            "grace_period_expires_date": None,
-            "is_sandbox": True,
-            "original_purchase_date": pur_date,
-            "ownership_type": "PURCHASED",
-            "period_type": "normal",
-            "product_plan_identifier": None,
-            "purchase_date": pur_date,
-            "refunded_at": None,
-            "store": "app_store",
-            "unsubscribe_detected_at": None
-        }
+        "locket_1600_1y": sub_payload_1600,
+        "locket_gold_annual": sub_payload_annual
     }
 
     # Bỏ các header/trường lạ không chuẩn
     data.pop("Attention", None)
 
-    log.info(f"[INJECT] Gold (locket_gold_annual) injected for uid={uid}, purchase={pur_date}, expires={exp_date}")
+    log.info(f"[INJECT] Gold (locket_1600_1y + locket_gold_annual) injected for uid={uid}, purchase={pur_date}, expires={exp_date}")
     return data
 
 
