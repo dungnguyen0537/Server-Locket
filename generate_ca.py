@@ -107,7 +107,8 @@ def build_server_cert(ca_key, ca_cert):
     ])
 
     now = datetime.datetime.utcnow()
-    # SANs cover RevenueCat + Firebase Remote Config + Locket Camera
+    import ipaddress
+    # SANs cover RevenueCat + Firebase Remote Config + Locket Camera + DoH domains
     san = x509.SubjectAlternativeName([
         x509.DNSName("api.revenuecat.com"),
         x509.DNSName("*.revenuecat.com"),
@@ -119,6 +120,10 @@ def build_server_cert(ca_key, ca_cert):
         x509.DNSName("*.firebaselogging.googleapis.com"),
         x509.DNSName("api.locketcamera.com"),
         x509.DNSName("*.locketcamera.com"),
+        x509.DNSName("dns.locketgold.shop"),
+        x509.DNSName("*.locketgold.shop"),
+        x509.DNSName("locketgold.shop"),
+        x509.IPAddress(ipaddress.IPv4Address("54.179.86.163")),
     ])
 
     server_cert = (
