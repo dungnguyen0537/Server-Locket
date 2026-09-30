@@ -232,12 +232,14 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     subscriber["non_subscriptions"] = {}
     subscriber["other_purchases"] = {}
 
-    # Entitlement: product_identifier chuẩn locket_1600_1y (SKU App Store VN mở 10s video, QR, đăng riêng tư)
+    # Entitlement: product_identifier PHẢI là locket_gold_annual cho GET /v1/subscribers
+    # Locket iOS app kiểm tra entitlements.Gold.product_identifier == "locket_gold_annual"
+    # Nếu không khớp -> app coi là KHÔNG CÓ GOLD
     subscriber["entitlements"] = {
         "Gold": {
             "expires_date": exp_date,
             "grace_period_expires_date": None,
-            "product_identifier": "locket_1600_1y",
+            "product_identifier": "locket_gold_annual",
             "purchase_date": pur_date
         }
     }
@@ -298,8 +300,14 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
 
 
 def inject_gold_into_receipt(data: dict, uid: str) -> dict:
-    """Sửa response POST /receipts để báo Gold active."""
-    return inject_gold_into_subscriber(data, uid)
+    """Sửa response POST /receipts để báo Gold active.
+    Competitor dùng product_identifier = locket_1600_1y cho receipts."""
+    data = inject_gold_into_subscriber(data, uid)
+    # Override product_identifier cho receipts (khớp competitor)
+    if "subscriber" in data and "entitlements" in data["subscriber"]:
+        gold = data["subscriber"]["entitlements"].get("Gold", {})
+        gold["product_identifier"] = "locket_1600_1y"
+    return data
 
 
 # --------------- Regex Patterns ---------------
