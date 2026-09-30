@@ -226,30 +226,44 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     subscriber["first_seen"] = pur_date
     subscriber["last_seen"] = now_iso
     subscriber["original_purchase_date"] = pur_date
-    subscriber["original_application_version"] = None
+    subscriber["original_application_version"] = "1.0"  # Chữ ký TestFlight Dev Beta gốc
     subscriber["management_url"] = None
-    subscriber["subscriber_attributes"] = {}
+    subscriber["subscriber_attributes"] = {
+        "$country": {"value": "US", "updated_at_ms": now_ms},
+        "$locale": {"value": "en_US", "updated_at_ms": now_ms},
+        "country": {"value": "US", "updated_at_ms": now_ms},
+        "is_beta": {"value": "true", "updated_at_ms": now_ms},
+        "testflight": {"value": "true", "updated_at_ms": now_ms},
+        "dev_beta": {"value": "true", "updated_at_ms": now_ms},
+        "developer_mode": {"value": "true", "updated_at_ms": now_ms},
+        "can_post_privately": {"value": "true", "updated_at_ms": now_ms},
+        "video_duration_limit": {"value": "15", "updated_at_ms": now_ms},
+        "video_15s": {"value": "true", "updated_at_ms": now_ms},
+        "show_qr_code": {"value": "true", "updated_at_ms": now_ms},
+        "qr_code_enabled": {"value": "true", "updated_at_ms": now_ms}
+    }
     subscriber["non_subscriptions"] = {}
     subscriber["other_purchases"] = {}
 
-    # Entitlement: product_identifier bắt buộc là 'locket_gold_annual'
+    # Entitlement: product_identifier 'locket_gold_annual' kèm is_sandbox=True để Locket nhận diện TestFlight
     subscriber["entitlements"] = {
         "Gold": {
             "expires_date": exp_date,
             "grace_period_expires_date": None,
             "product_identifier": "locket_gold_annual",
-            "purchase_date": pur_date
+            "purchase_date": pur_date,
+            "is_sandbox": True
         }
     }
 
-    # Subscriptions: 'locket_gold_annual' là mã SKU gốc mở Hiện mã QR, Quay video 10s & Đăng riêng tư
+    # Subscriptions: 'locket_gold_annual' kèm is_sandbox=True mở Hiện mã QR, Quay video 15s & Đăng riêng tư
     subscriber["subscriptions"] = {
         "locket_gold_annual": {
             "auto_resume_date": None,
             "billing_issues_detected_at": None,
             "expires_date": exp_date,
             "grace_period_expires_date": None,
-            "is_sandbox": False,
+            "is_sandbox": True,
             "original_purchase_date": pur_date,
             "ownership_type": "PURCHASED",
             "period_type": "normal",
@@ -541,17 +555,150 @@ async def handle_request(request: web.Request) -> web.Response:
         return web.Response(status=404, text="Not found")
 
     # -------------------------------------------------------------
-    # Firebase Remote Config: Forward sạch tới Google kèm US Spoofing (giống competitor)
+    # Firebase Remote Config: Intercept và Inject Quay video 15s, Hiện mã QR & Đăng riêng tư
+    # -------------------------------------------------------------
     if "firebaseremoteconfig" in raw_host or "firebaseremoteconfig" in path:
         target_upstream = "firebaseremoteconfig.googleapis.com"
         try:
             status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
-            log.info(f"[FIREBASE] Upstream status {status}, size {len(resp_body)} bytes")
         except Exception as e:
             log.error(f"[FIREBASE] Upstream error: {e}")
             status = 502
             resp_headers = {}
             resp_body = b""
+
+        feature_flags = {
+            # 1. Quay video 15s (Locket video length - snake_case & camelCase)
+            "video_duration_limit": "15",
+            "max_video_seconds": "15",
+            "video_seconds": "15",
+            "max_video_duration": "15",
+            "video_length_seconds": "15",
+            "video_duration": "15",
+            "video_max_duration": "15",
+            "video_length": "15",
+            "max_video_length": "15",
+            "can_record_video": "true",
+            "video_recording_enabled": "true",
+            "video_enabled": "true",
+            "video_15s_enabled": "true",
+            "video_15s": "true",
+            "can_record_15s": "true",
+            "enable_15s_video": "true",
+            "allow_15s_video": "true",
+            "extended_video": "true",
+            "extended_video_enabled": "true",
+            "gold_video_duration": "15",
+
+            # camelCase equivalents
+            "videoDurationLimit": "15",
+            "maxVideoDuration": "15",
+            "maxVideoSeconds": "15",
+            "videoSeconds": "15",
+            "videoLengthSeconds": "15",
+            "videoDuration": "15",
+            "videoMaxDuration": "15",
+            "canRecordVideo": "true",
+            "videoRecordingEnabled": "true",
+            "videoEnabled": "true",
+            "video15sEnabled": "true",
+            "video15s": "true",
+            "canRecord15s": "true",
+            "enable15sVideo": "true",
+            "allow15sVideo": "true",
+            "extendedVideo": "true",
+            "extendedVideoEnabled": "true",
+            "goldVideoDuration": "15",
+
+            # 2. Hiện mã QR (Mã QR kết bạn / chia sẻ hồ sơ TestFlight dev beta)
+            "qr_code_enabled": "true",
+            "show_qr_code": "true",
+            "profile_qr_enabled": "true",
+            "can_share_qr": "true",
+            "qr_enabled": "true",
+            "qr_code": "true",
+            "show_qr": "true",
+            "enable_qr": "true",
+            "profile_qr": "true",
+            "qrCodeEnabled": "true",
+            "showQrCode": "true",
+            "profileQrEnabled": "true",
+            "canShareQr": "true",
+
+            # 3. Chế độ đăng riêng tư / Bạn bè chọn lọc (Audience & Private Moments)
+            "can_post_privately": "true",
+            "private_moments_enabled": "true",
+            "private_moments": "true",
+            "private_posts_enabled": "true",
+            "enable_private_moments": "true",
+            "allow_private_moments": "true",
+            "private_audience_enabled": "true",
+            "audience_selection_enabled": "true",
+            "selective_sharing_enabled": "true",
+            "selected_friends_enabled": "true",
+            "allow_audience_selection": "true",
+            "friends_selection_enabled": "true",
+            "private_mode_enabled": "true",
+            "canPostPrivately": "true",
+            "privateMomentsEnabled": "true",
+            "privatePostsEnabled": "true",
+            "audienceSelectionEnabled": "true",
+
+            # 4. Kích hoạt cờ TestFlight / Dev Beta trong app
+            "is_beta": "true",
+            "is_dev": "true",
+            "is_internal": "true",
+            "developer_mode": "true",
+            "dev_beta": "true",
+            "testflight": "true",
+            "beta_tester": "true",
+            "beta_features_enabled": "true",
+            "isBeta": "true",
+            "isDev": "true",
+            "developerMode": "true",
+            "testFlight": "true",
+            "betaFeaturesEnabled": "true"
+        }
+
+        ver_ts = str(int(time.time() * 1000))
+        if status == 200 and resp_body:
+            try:
+                decompressed = resp_body
+                if resp_body.startswith(b'\x1f\x8b'):
+                    import gzip
+                    decompressed = gzip.decompress(resp_body)
+                elif resp_body.startswith(b'x\x9c') or resp_body.startswith(b'x\x01'):
+                    import zlib
+                    decompressed = zlib.decompress(resp_body)
+
+                data = json.loads(decompressed.decode("utf-8"))
+                entries = data.setdefault("entries", {})
+                entries.update(feature_flags)
+                data["state"] = "UPDATE"
+                data["templateVersion"] = ver_ts
+
+                resp_body = json.dumps(data).encode("utf-8")
+                resp_headers["Content-Length"] = str(len(resp_body))
+                resp_headers["Content-Type"] = "application/json"
+                resp_headers.pop("Content-Encoding", None)
+                log.info(f"[FIREBASE] Injected 15s video, QR code, and private post flags (total entries={len(entries)})")
+            except Exception as fe:
+                log.error(f"[FIREBASE INJECT ERROR] {fe}")
+        else:
+            # Fallback nếu Google trả lỗi, rate limit hoặc 304 -> Vẫn trả config hợp lệ cho app
+            log.info(f"[FIREBASE OVERRIDE] Upstream status {status}, returning generated feature config")
+            fake_config = {
+                "entries": feature_flags,
+                "state": "UPDATE",
+                "templateVersion": ver_ts
+            }
+            resp_body = json.dumps(fake_config).encode("utf-8")
+            status = 200
+            resp_headers = {
+                "Content-Type": "application/json",
+                "Content-Length": str(len(resp_body)),
+                "Cache-Control": "max-age=0, no-cache, no-store, must-revalidate"
+            }
 
         clean_resp_headers = {
             k: v for k, v in resp_headers.items()
