@@ -204,7 +204,8 @@ FAKE_SUBSCRIPTION = {
 }
 
 def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
-    """Sửa response subscriber để inject Gold entitlement chuẩn locket_gold_annual của đối thủ."""
+    """Sửa response GET /v1/subscribers — khớp 100% competitor dns.nodns.vn.
+    Competitor CHỈ trả locket_gold_annual, không có locket_1600_1y, không có price/display_name."""
     pur_date, exp_date = get_uid_dates(uid)
     if not pur_date:
         pur_date = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -219,7 +220,6 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
 
     subscriber = data.setdefault("subscriber", {})
 
-    # Khớp chính xác 100% cấu trúc của đối thủ dns.nodns.vn
     subscriber["aliases"] = [uid]
     subscriber["app_user_id"] = uid
     subscriber["original_app_user_id"] = uid
@@ -232,9 +232,7 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     subscriber["non_subscriptions"] = {}
     subscriber["other_purchases"] = {}
 
-    # Entitlement: product_identifier PHẢI là locket_gold_annual cho GET /v1/subscribers
-    # Locket iOS app kiểm tra entitlements.Gold.product_identifier == "locket_gold_annual"
-    # Nếu không khớp -> app coi là KHÔNG CÓ GOLD
+    # Entitlement: CHỈ locket_gold_annual (khớp competitor GET response)
     subscriber["entitlements"] = {
         "Gold": {
             "expires_date": exp_date,
@@ -244,42 +242,79 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
         }
     }
 
-    # Subscriptions: Có CẢ locket_1600_1y VÀ locket_gold_annual với StoreKit Transaction ID và Price chuẩn
-    sub_payload_1600 = {
-        "auto_resume_date": None,
-        "billing_issues_detected_at": None,
-        "display_name": "locket_1600_1y",
-        "expires_date": exp_date,
-        "grace_period_expires_date": None,
-        "is_sandbox": False,
-        "original_purchase_date": pur_date,
-        "ownership_type": "PURCHASED",
-        "period_type": "normal",
-        "price": {
-            "amount": 399000,
-            "currency": "VND"
-        },
-        "purchase_date": pur_date,
-        "refunded_at": None,
-        "store": "app_store",
-        "store_transaction_id": "490003094202846",
-        "unsubscribe_detected_at": None
+    # Subscriptions: CHỈ locket_gold_annual (competitor GET response KHÔNG CÓ locket_1600_1y)
+    subscriber["subscriptions"] = {
+        "locket_gold_annual": {
+            "auto_resume_date": None,
+            "billing_issues_detected_at": None,
+            "expires_date": exp_date,
+            "grace_period_expires_date": None,
+            "is_sandbox": False,
+            "original_purchase_date": pur_date,
+            "ownership_type": "PURCHASED",
+            "period_type": "normal",
+            "product_plan_identifier": None,
+            "purchase_date": pur_date,
+            "refunded_at": None,
+            "store": "app_store",
+            "unsubscribe_detected_at": None
+        }
     }
 
-    sub_payload_annual = {
+    data.pop("Attention", None)
+
+    log.info(f"[INJECT] Gold (locket_gold_annual) for uid={uid}, purchase={pur_date}, expires={exp_date}")
+    return data
+
+
+def inject_gold_into_receipt(data: dict, uid: str) -> dict:
+    """Sửa response POST /v1/receipts — khớp competitor: locket_1600_1y entitlement + cả 2 subscriptions."""
+    pur_date, exp_date = get_uid_dates(uid)
+    if not pur_date:
+        pur_date = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not exp_date or exp_date == FAKE_EXPIRES_DATE:
+        exp_date = (datetime.datetime.utcnow() + datetime.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    now_ms = int(time.time() * 1000)
+
+    data["request_date"] = now_iso
+    data["request_date_ms"] = now_ms
+
+    subscriber = data.setdefault("subscriber", {})
+    subscriber["aliases"] = [uid]
+    subscriber["app_user_id"] = uid
+    subscriber["original_app_user_id"] = uid
+    subscriber["first_seen"] = pur_date
+    subscriber["last_seen"] = now_iso
+    subscriber["original_purchase_date"] = pur_date
+    subscriber["original_application_version"] = "4"
+    subscriber["management_url"] = "https://apps.apple.com/account/subscriptions"
+    subscriber["subscriber_attributes"] = {}
+    subscriber["non_subscriptions"] = {}
+    subscriber["other_purchases"] = {}
+
+    # Entitlement: locket_1600_1y cho receipts (khớp competitor POST response)
+    subscriber["entitlements"] = {
+        "Gold": {
+            "expires_date": exp_date,
+            "grace_period_expires_date": None,
+            "product_identifier": "locket_1600_1y",
+            "purchase_date": pur_date
+        }
+    }
+
+    # Subscriptions: CẢ HAI locket_1600_1y VÀ locket_gold_annual (khớp competitor POST response)
+    sub_base = {
         "auto_resume_date": None,
         "billing_issues_detected_at": None,
-        "display_name": "locket_gold_annual",
         "expires_date": exp_date,
         "grace_period_expires_date": None,
         "is_sandbox": False,
         "original_purchase_date": pur_date,
         "ownership_type": "PURCHASED",
         "period_type": "normal",
-        "price": {
-            "amount": 399000,
-            "currency": "VND"
-        },
+        "price": {"amount": 399000, "currency": "VND"},
         "purchase_date": pur_date,
         "refunded_at": None,
         "store": "app_store",
@@ -288,25 +323,12 @@ def inject_gold_into_subscriber(data: dict, uid: str) -> dict:
     }
 
     subscriber["subscriptions"] = {
-        "locket_1600_1y": sub_payload_1600,
-        "locket_gold_annual": sub_payload_annual
+        "locket_1600_1y": {**sub_base, "display_name": "locket_1600_1y"},
+        "locket_gold_annual": {**sub_base, "display_name": "locket_gold_annual"}
     }
 
-    # Bỏ các header/trường lạ không chuẩn
     data.pop("Attention", None)
-
-    log.info(f"[INJECT] Gold (locket_1600_1y + locket_gold_annual) injected for uid={uid}, purchase={pur_date}, expires={exp_date}")
-    return data
-
-
-def inject_gold_into_receipt(data: dict, uid: str) -> dict:
-    """Sửa response POST /receipts để báo Gold active.
-    Competitor dùng product_identifier = locket_1600_1y cho receipts."""
-    data = inject_gold_into_subscriber(data, uid)
-    # Override product_identifier cho receipts (khớp competitor)
-    if "subscriber" in data and "entitlements" in data["subscriber"]:
-        gold = data["subscriber"]["entitlements"].get("Gold", {})
-        gold["product_identifier"] = "locket_1600_1y"
+    log.info(f"[INJECT] Receipt Gold (locket_1600_1y + locket_gold_annual) for uid={uid}")
     return data
 
 
@@ -578,150 +600,20 @@ async def handle_request(request: web.Request) -> web.Response:
         return web.Response(status=404, text="Not found")
 
     # -------------------------------------------------------------
-    # Firebase Remote Config: Intercept và Inject Quay video 15s, Hiện mã QR & Đăng riêng tư
+    # Firebase Remote Config: Forward sạch tới Google (giống competitor dns.nodns.vn)
+    # Competitor KHÔNG inject feature flags — chỉ forward nguyên bản với US geo-spoofing
+    # Các tính năng video 15s, QR, private post được unlock bởi Gold entitlement, không phải Remote Config
     # -------------------------------------------------------------
     if "firebaseremoteconfig" in raw_host or "firebaseremoteconfig" in path:
         target_upstream = "firebaseremoteconfig.googleapis.com"
         try:
             status, resp_headers, resp_body = await forward_to_upstream(target_upstream, method, path, headers, body)
+            log.info(f"[FIREBASE] Forwarded cleanly to Google, status={status}, size={len(resp_body)} bytes")
         except Exception as e:
             log.error(f"[FIREBASE] Upstream error: {e}")
             status = 502
             resp_headers = {}
             resp_body = b""
-
-        feature_flags = {
-            # 1. Quay video 15s (Locket video length - snake_case & camelCase)
-            "video_duration_limit": "15",
-            "max_video_seconds": "15",
-            "video_seconds": "15",
-            "max_video_duration": "15",
-            "video_length_seconds": "15",
-            "video_duration": "15",
-            "video_max_duration": "15",
-            "video_length": "15",
-            "max_video_length": "15",
-            "can_record_video": "true",
-            "video_recording_enabled": "true",
-            "video_enabled": "true",
-            "video_15s_enabled": "true",
-            "video_15s": "true",
-            "can_record_15s": "true",
-            "enable_15s_video": "true",
-            "allow_15s_video": "true",
-            "extended_video": "true",
-            "extended_video_enabled": "true",
-            "gold_video_duration": "15",
-
-            # camelCase equivalents
-            "videoDurationLimit": "15",
-            "maxVideoDuration": "15",
-            "maxVideoSeconds": "15",
-            "videoSeconds": "15",
-            "videoLengthSeconds": "15",
-            "videoDuration": "15",
-            "videoMaxDuration": "15",
-            "canRecordVideo": "true",
-            "videoRecordingEnabled": "true",
-            "videoEnabled": "true",
-            "video15sEnabled": "true",
-            "video15s": "true",
-            "canRecord15s": "true",
-            "enable15sVideo": "true",
-            "allow15sVideo": "true",
-            "extendedVideo": "true",
-            "extendedVideoEnabled": "true",
-            "goldVideoDuration": "15",
-
-            # 2. Hiện mã QR (Mã QR kết bạn / chia sẻ hồ sơ TestFlight dev beta)
-            "qr_code_enabled": "true",
-            "show_qr_code": "true",
-            "profile_qr_enabled": "true",
-            "can_share_qr": "true",
-            "qr_enabled": "true",
-            "qr_code": "true",
-            "show_qr": "true",
-            "enable_qr": "true",
-            "profile_qr": "true",
-            "qrCodeEnabled": "true",
-            "showQrCode": "true",
-            "profileQrEnabled": "true",
-            "canShareQr": "true",
-
-            # 3. Chế độ đăng riêng tư / Bạn bè chọn lọc (Audience & Private Moments)
-            "can_post_privately": "true",
-            "private_moments_enabled": "true",
-            "private_moments": "true",
-            "private_posts_enabled": "true",
-            "enable_private_moments": "true",
-            "allow_private_moments": "true",
-            "private_audience_enabled": "true",
-            "audience_selection_enabled": "true",
-            "selective_sharing_enabled": "true",
-            "selected_friends_enabled": "true",
-            "allow_audience_selection": "true",
-            "friends_selection_enabled": "true",
-            "private_mode_enabled": "true",
-            "canPostPrivately": "true",
-            "privateMomentsEnabled": "true",
-            "privatePostsEnabled": "true",
-            "audienceSelectionEnabled": "true",
-
-            # 4. Kích hoạt cờ TestFlight / Dev Beta trong app
-            "is_beta": "true",
-            "is_dev": "true",
-            "is_internal": "true",
-            "developer_mode": "true",
-            "dev_beta": "true",
-            "testflight": "true",
-            "beta_tester": "true",
-            "beta_features_enabled": "true",
-            "isBeta": "true",
-            "isDev": "true",
-            "developerMode": "true",
-            "testFlight": "true",
-            "betaFeaturesEnabled": "true"
-        }
-
-        ver_ts = str(int(time.time() * 1000))
-        if status == 200 and resp_body:
-            try:
-                decompressed = resp_body
-                if resp_body.startswith(b'\x1f\x8b'):
-                    import gzip
-                    decompressed = gzip.decompress(resp_body)
-                elif resp_body.startswith(b'x\x9c') or resp_body.startswith(b'x\x01'):
-                    import zlib
-                    decompressed = zlib.decompress(resp_body)
-
-                data = json.loads(decompressed.decode("utf-8"))
-                entries = data.setdefault("entries", {})
-                entries.update(feature_flags)
-                data["state"] = "UPDATE"
-                data["templateVersion"] = ver_ts
-
-                resp_body = json.dumps(data).encode("utf-8")
-                resp_headers["Content-Length"] = str(len(resp_body))
-                resp_headers["Content-Type"] = "application/json"
-                resp_headers.pop("Content-Encoding", None)
-                log.info(f"[FIREBASE] Injected 15s video, QR code, and private post flags (total entries={len(entries)})")
-            except Exception as fe:
-                log.error(f"[FIREBASE INJECT ERROR] {fe}")
-        else:
-            # Fallback nếu Google trả lỗi, rate limit hoặc 304 -> Vẫn trả config hợp lệ cho app
-            log.info(f"[FIREBASE OVERRIDE] Upstream status {status}, returning generated feature config")
-            fake_config = {
-                "entries": feature_flags,
-                "state": "UPDATE",
-                "templateVersion": ver_ts
-            }
-            resp_body = json.dumps(fake_config).encode("utf-8")
-            status = 200
-            resp_headers = {
-                "Content-Type": "application/json",
-                "Content-Length": str(len(resp_body)),
-                "Cache-Control": "max-age=0, no-cache, no-store, must-revalidate"
-            }
 
         clean_resp_headers = {
             k: v for k, v in resp_headers.items()
